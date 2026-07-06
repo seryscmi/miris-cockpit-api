@@ -1,0 +1,31 @@
+# Render Blueprint — automatisch als Web-Service deployen.
+# In Render: "New +" → "Blueprint" → dieses Repo wählen. Danach die mit
+# sync:false markierten Secrets im Dashboard eintragen. ADMIN_TOKEN wird
+# automatisch generiert (Wert danach in die Cockpit-Einstellungen kopieren).
+services:
+  - type: web
+    name: miris-cockpit-api
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    envVars:
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: ALLOWED_ORIGIN
+        value: https://seryscmi.github.io
+      - key: SHOPIFY_STORE_HANDLE
+        value: 9zjzs5-ri
+      - key: SHOPIFY_API_VERSION
+        value: "2024-10"
+      - key: CLOUDINARY_CLOUD_NAME
+        value: dg3k6nvwj
+      - key: SHOPIFY_SHOP
+        sync: false
+      - key: SHOPIFY_ADMIN_TOKEN
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
