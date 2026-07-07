@@ -126,4 +126,32 @@ async function tagOrderDeleted(orderName) {
   if (node) await adminGraphQL(TAGS_ADD, { id: node.id, tags: ["augenbild-geloescht"] });
 }
 
-module.exports = { adminGraphQL, fetchOrders, mapOrder, deriveImages, cloudinaryPublicId, tagOrderDeleted, ORDERS_QUERY };
+/* ---------- Diagnose (verrät keine Secrets) ---------- */
+function diag() {
+  const shopRaw = (process.env.SHOPIFY_SHOP || "").trim();
+  let shopResolved = "";
+  try { shopResolved = shopDomain(); } catch (e) { shopResolved = "(SHOPIFY_SHOP fehlt)"; }
+  const token = (process.env.SHOPIFY_ADMIN_TOKEN || "").trim();
+  return {
+    shopifyShopRaw: shopRaw || "(leer)",
+    shopifyShopResolved: shopResolved,
+    apiVersion: API_VERSION,
+    storeHandle: storeHandle(),
+    adminTokenPresent: !!token,
+    adminTokenStartsWithShpat: token.startsWith("shpat_"),
+    adminTokenLength: token.length,
+    adminTokenHasWhitespace: /\s/.test(process.env.SHOPIFY_ADMIN_TOKEN || ""),
+    cloudinaryKeySet: !!process.env.CLOUDINARY_API_KEY,
+    cloudinarySecretSet: !!process.env.CLOUDINARY_API_SECRET,
+  };
+}
+async function testConnection() {
+  try {
+    const d = await adminGraphQL(`{ shop { name myshopifyDomain } }`);
+    return { ok: true, shopName: d.shop && d.shop.name, myshopifyDomain: d.shop && d.shop.myshopifyDomain };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e).slice(0, 400) };
+  }
+}
+
+module.exports = { adminGraphQL, fetchOrders, mapOrder, deriveImages, cloudinaryPublicId, tagOrderDeleted, ORDERS_QUERY, diag, testConnection };

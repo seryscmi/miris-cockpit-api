@@ -79,6 +79,15 @@ function createApp(deps) {
     } catch (e) { res.status(502).json({ error: String((e && e.message) || e) }); }
   });
 
+  // Diagnose: zeigt (ohne Secrets) die Konfiguration + testet die Shopify-Verbindung.
+  app.get("/admin/diag", async (req, res) => {
+    try {
+      const config = shopify.diag ? shopify.diag() : {};
+      const shopify_test = shopify.testConnection ? await shopify.testConnection() : { ok: false, error: "diag n/a" };
+      res.json({ ok: true, config, shopify_test });
+    } catch (e) { res.status(500).json({ error: String((e && e.message) || e) }); }
+  });
+
   // Phase-3-Platzhalter: liefern leere Listen, damit das Cockpit sauber synchronisiert.
   app.get("/admin/anliegen", (req, res) => res.json({ anliegen: [], note: "Phase 3: Mary-Persistenz ausstehend" }));
   app.get("/admin/chats", (req, res) => res.json({ chats: [], note: "Phase 3: Mary-Persistenz ausstehend" }));
