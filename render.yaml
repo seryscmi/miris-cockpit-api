@@ -23,6 +23,12 @@ services:
         value: dg3k6nvwj
       - key: SHOPIFY_SHOP
         sync: false
+      # Neuer Standard (Dev Dashboard): Client ID + Client Secret → Token automatisch
+      - key: SHOPIFY_CLIENT_ID
+        sync: false
+      - key: SHOPIFY_CLIENT_SECRET
+        sync: false
+      # Optional/alt: statischer Admin-Token (falls jemals verfügbar)
       - key: SHOPIFY_ADMIN_TOKEN
         sync: false
       - key: CLOUDINARY_API_KEY

@@ -17,9 +17,38 @@ function storeHandle() {
   return (process.env.SHOPIFY_STORE_HANDLE || "9zjzs5-ri").trim();
 }
 
+/**
+ * Access-Token beschaffen. Zwei Wege:
+ *  1) Neuer Standard (Dev Dashboard): SHOPIFY_CLIENT_ID + SHOPIFY_CLIENT_SECRET
+ *     → client_credentials-Grant → 24h-Token, hier gecacht & automatisch erneuert.
+ *  2) Alt/optional: statischer SHOPIFY_ADMIN_TOKEN (falls jemals verfügbar).
+ */
+let _tok = { value: null, expiresAt: 0 };
+async function getAccessToken() {
+  const cid = (process.env.SHOPIFY_CLIENT_ID || "").trim();
+  const csec = (process.env.SHOPIFY_CLIENT_SECRET || "").trim();
+  if (cid && csec) {
+    const now = Date.now();
+    if (_tok.value && now < _tok.expiresAt - 120000) return _tok.value; // 2 Min Puffer
+    const url = `https://${shopDomain()}/admin/oauth/access_token`;
+    const body = new URLSearchParams({ grant_type: "client_credentials", client_id: cid, client_secret: csec });
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`Token-Austausch ${res.status}: ${t.slice(0, 300)}`);
+    }
+    const j = await res.json();
+    if (!j.access_token) throw new Error("Token-Austausch: keine access_token in Antwort");
+    _tok = { value: j.access_token, expiresAt: Date.now() + (Number(j.expires_in) || 86399) * 1000 };
+    return _tok.value;
+  }
+  const staticTok = (process.env.SHOPIFY_ADMIN_TOKEN || "").trim();
+  if (staticTok) return staticTok;
+  throw new Error("Kein Shopify-Zugang: setze SHOPIFY_CLIENT_ID + SHOPIFY_CLIENT_SECRET (Dev Dashboard) oder SHOPIFY_ADMIN_TOKEN.");
+}
+
 async function adminGraphQL(query, variables) {
-  const token = (process.env.SHOPIFY_ADMIN_TOKEN || "").trim();
-  if (!token) throw new Error("SHOPIFY_ADMIN_TOKEN nicht gesetzt");
+  const token = await getAccessToken();
   const url = `https://${shopDomain()}/admin/api/${API_VERSION}/graphql.json`;
   const res = await fetch(url, {
     method: "POST",
@@ -132,15 +161,18 @@ function diag() {
   let shopResolved = "";
   try { shopResolved = shopDomain(); } catch (e) { shopResolved = "(SHOPIFY_SHOP fehlt)"; }
   const token = (process.env.SHOPIFY_ADMIN_TOKEN || "").trim();
+  const cid = (process.env.SHOPIFY_CLIENT_ID || "").trim();
+  const csec = (process.env.SHOPIFY_CLIENT_SECRET || "").trim();
+  const authMode = (cid && csec) ? "client_credentials" : (token ? "static_token" : "NONE");
   return {
     shopifyShopRaw: shopRaw || "(leer)",
     shopifyShopResolved: shopResolved,
     apiVersion: API_VERSION,
     storeHandle: storeHandle(),
-    adminTokenPresent: !!token,
-    adminTokenStartsWithShpat: token.startsWith("shpat_"),
-    adminTokenLength: token.length,
-    adminTokenHasWhitespace: /\s/.test(process.env.SHOPIFY_ADMIN_TOKEN || ""),
+    authMode,
+    clientIdSet: !!cid,
+    clientSecretSet: !!csec,
+    staticTokenPresent: !!token,
     cloudinaryKeySet: !!process.env.CLOUDINARY_API_KEY,
     cloudinarySecretSet: !!process.env.CLOUDINARY_API_SECRET,
   };
@@ -154,4 +186,4 @@ async function testConnection() {
   }
 }
 
-module.exports = { adminGraphQL, fetchOrders, mapOrder, deriveImages, cloudinaryPublicId, tagOrderDeleted, ORDERS_QUERY, diag, testConnection };
+module.exports = { adminGraphQL, getAccessToken, fetchOrders, mapOrder, deriveImages, cloudinaryPublicId, tagOrderDeleted, ORDERS_QUERY, diag, testConnection };
