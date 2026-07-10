@@ -97,10 +97,14 @@ function createApp(deps) {
   /* ---------- Kundenanliegen: primär aus der DB (Mary schreibt), Fallback Klaviyo ---------- */
 
   app.get("/admin/anliegen", async (req, res) => {
-    try {
-      if (db.configured()) return res.json({ anliegen: await db.listAnliegen(), source: "db" });
-      res.json({ anliegen: await klaviyo.fetchAnliegen(), source: "klaviyo" });
-    } catch (e) { res.status(502).json({ error: String((e && e.message) || e), anliegen: [] }); }
+    // DB primär; bei DB-Fehler ODER fehlender Konfiguration auf Klaviyo zurückfallen —
+    // die Inbox darf nie wegen einer falschen DATABASE_URL leer sein.
+    if (db.configured()) {
+      try { return res.json({ anliegen: await db.listAnliegen(), source: "db" }); }
+      catch (e) { console.warn("[anliegen] DB-Fehler, Fallback Klaviyo:", String((e && e.message) || e).slice(0, 120)); }
+    }
+    try { res.json({ anliegen: await klaviyo.fetchAnliegen(), source: "klaviyo" }); }
+    catch (e) { res.status(502).json({ error: String((e && e.message) || e), anliegen: [] }); }
   });
 
   app.patch("/admin/anliegen/:id", async (req, res) => {
