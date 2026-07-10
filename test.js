@@ -7,6 +7,7 @@ process.env.SHOPIFY_STORE_HANDLE = "9zjzs5-ri";
 const assert = require("assert");
 const { createApp, timingEqual } = require("./server");
 const shopify = require("./shopify");
+const klaviyo = require("./klaviyo");
 
 let pass = 0, fail = 0;
 function ok(name, cond, extra) { if (cond) { pass++; console.log("  ✓ " + name); } else { fail++; console.log("  ✗ " + name + (extra ? "  →  " + extra : "")); } }
@@ -44,13 +45,30 @@ const imgs = shopify.deriveImages([m]);
 ok("deriveImages finds 2 eye images", imgs.length === 2, "n=" + imgs.length);
 ok("cloudinary public_id parsed", imgs[0].cloudinaryPublicId === "kunden-augenfotos/ygsx0esi3s8ontkh70uf", imgs[0].cloudinaryPublicId);
 
+/* ---- 1b. Klaviyo Anliegen-Mapping (echte Event-Form aus Klaviyo) ---- */
+console.log("\n[1b] Klaviyo mapEvent / deriveKind");
+const evEscalation = { id: "7fTk8gNxCd7", attributes: { datetime: "2026-07-04T15:01:58+00:00", event_properties: { customer_name: "Michail Seryschew", admin_subject: "Chat-Nachricht von Michail Seryschew", topic: "Fehlende Perle im Set", customer_email: "cognacs-gesprochen0t@icloud.com", order_name: "B1001", verified: true, message: "Im Set der Bestellung B1001 fehlt eine Perle. Kunde bittet um Lösung." } } };
+const evFeedback = { id: "7fTgjuWu8Fq", attributes: { datetime: "2026-07-04T14:49:41+00:00", event_properties: { message: "Ich mag Mary!", topic: "Feedback", admin_subject: "Feedback von Michail Seryschew", customer_name: "Michail Seryschew", customer_email: "x@y.de", order_name: "" } } };
+const evAddr = { id: "7fADzHDHfeq", attributes: { datetime: "2026-07-02T14:05:11+00:00", event_properties: { message: "Adressänderung über den Chat.", topic: "Adressänderung", admin_subject: "Adressänderung B1027", customer_name: "M. S.", customer_email: "x@y.de", order_name: "B1027" } } };
+const a1 = klaviyo.mapEvent(evEscalation);
+ok("mapEvent id = klaviyo event id", a1.id === "7fTk8gNxCd7");
+ok("mapEvent kind = Chat-Nachricht", a1.kind === "Chat-Nachricht", a1.kind);
+ok("mapEvent nachricht = message", /fehlt eine Perle/.test(a1.nachricht));
+ok("mapEvent thema = topic", a1.thema === "Fehlende Perle im Set");
+ok("mapEvent relatedOrder = order_name", a1.relatedOrder === "B1001");
+ok("mapEvent customerEmail mapped", a1.customerEmail === "cognacs-gesprochen0t@icloud.com");
+ok("deriveKind Feedback", klaviyo.mapEvent(evFeedback).kind === "Feedback");
+ok("deriveKind Adressänderung", klaviyo.mapEvent(evAddr).kind === "Adressänderung");
+ok("empty order_name → relatedOrder null", klaviyo.mapEvent(evFeedback).relatedOrder === null);
+
 /* ---- 2/3. Endpoints (auth, CORS, mapping, delete) ---- */
 const MOCK_ORDERS = [ m, shopify.mapOrder({ id: "gid://shopify/Order/1", name: "B1001", createdAt: "2026-05-28T16:26:02Z", tags: [], displayFinancialStatus: "PAID", displayFulfillmentStatus: "FULFILLED", totalPriceSet: { shopMoney: { amount: "0.0", currencyCode: "EUR" } }, customer: {}, metafields: { edges: [] }, lineItems: { edges: [] }, fulfillments: [] }) ];
 const deleted = [];
 const mockShopify = { fetchOrders: async () => MOCK_ORDERS, deriveImages: shopify.deriveImages, tagOrderDeleted: async () => {} };
 const mockCloud = { deleteImage: async (id) => { deleted.push(id); return { result: "ok" }; } };
+const mockKlaviyo = { fetchAnliegen: async () => [klaviyo.mapEvent(evEscalation), klaviyo.mapEvent(evFeedback), klaviyo.mapEvent(evAddr)], diag: () => ({ klaviyoKeySet: true }), testConnection: async () => ({ ok: true }) };
 
-const app = createApp({ shopify: mockShopify, cloud: mockCloud });
+const app = createApp({ shopify: mockShopify, cloud: mockCloud, klaviyo: mockKlaviyo });
 const server = app.listen(0, run);
 
 async function run() {
@@ -83,6 +101,15 @@ async function run() {
     r = await fetch(base + "/admin/images/delete", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ publicId: "kunden-augenfotos/abc", orderName: "B1027" }) });
     ok("POST delete with publicId = 200", r.status === 200);
     ok("cloud.deleteImage was called with publicId", deleted.includes("kunden-augenfotos/abc"), deleted.join(","));
+
+    console.log("\n[3b] Anliegen (Klaviyo)");
+    r = await fetch(base + "/admin/anliegen", { headers: { Authorization: B } });
+    ok("GET /admin/anliegen without token would 401 — with token 200", r.status === 200);
+    const an = await r.json();
+    ok("anliegen array returned (3)", Array.isArray(an.anliegen) && an.anliegen.length === 3, "n=" + (an.anliegen || []).length);
+    ok("anliegen carries kind + nachricht", an.anliegen[0].kind === "Chat-Nachricht" && /Perle/.test(an.anliegen[0].nachricht));
+    r = await fetch(base + "/admin/anliegen");
+    ok("GET /admin/anliegen without token = 401", r.status === 401);
 
     console.log("\n[4] CORS");
     r = await fetch(base + "/admin/orders", { method: "OPTIONS", headers: { Origin: ORIGIN, "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "authorization" } });

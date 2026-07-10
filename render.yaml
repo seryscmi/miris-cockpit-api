@@ -35,3 +35,10 @@ services:
         sync: false
       - key: CLOUDINARY_API_SECRET
         sync: false
+      # Klaviyo (Phase 3): Kundenanliegen live aus der Chat-Eskalations-Metrik lesen
+      - key: KLAVIYO_ESCALATION_METRIC
+        value: MIRIS_CHAT_ESCALATION
+      - key: KLAVIYO_REVISION
+        value: "2026-04-15"
+      - key: KLAVIYO_PRIVATE_API_KEY
+        sync: false
