@@ -24,6 +24,7 @@ const crypto = require("crypto");
 const defaultShopify = require("./shopify");
 const defaultCloud = require("./cloudinary");
 const defaultKlaviyo = require("./klaviyo");
+const defaultDb = require("./db");
 
 function timingEqual(a, b) {
   const ab = Buffer.from(String(a || ""));
@@ -37,6 +38,7 @@ function createApp(deps) {
   const shopify = deps.shopify || defaultShopify;
   const cloud = deps.cloud || defaultCloud;
   const klaviyo = deps.klaviyo || defaultKlaviyo;
+  const db = deps.db || defaultDb;
 
   const app = express();
   app.disable("x-powered-by");
@@ -44,7 +46,7 @@ function createApp(deps) {
   app.use(express.json({ limit: "64kb" }));
 
   const origin = (process.env.ALLOWED_ORIGIN || "https://seryscmi.github.io").split(",").map((s) => s.trim());
-  app.use(cors({ origin, methods: ["GET", "POST", "OPTIONS"], allowedHeaders: ["Authorization", "Content-Type"], maxAge: 86400 }));
+  app.use(cors({ origin, methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"], allowedHeaders: ["Authorization", "Content-Type"], maxAge: 86400 }));
 
   app.get("/health", (req, res) => res.json({ ok: true, service: "miris-cockpit-api", ts: Date.now() }));
 
@@ -81,24 +83,83 @@ function createApp(deps) {
     } catch (e) { res.status(502).json({ error: String((e && e.message) || e) }); }
   });
 
-  // Diagnose: zeigt (ohne Secrets) die Konfiguration + testet Shopify- und Klaviyo-Verbindung.
+  // Diagnose: zeigt (ohne Secrets) die Konfiguration + testet Shopify-, Klaviyo- und DB-Verbindung.
   app.get("/admin/diag", async (req, res) => {
     try {
-      const config = shopify.diag ? shopify.diag() : {};
-      const klaviyoCfg = klaviyo.diag ? klaviyo.diag() : {};
+      const config = Object.assign({}, shopify.diag ? shopify.diag() : {}, klaviyo.diag ? klaviyo.diag() : {}, db.diag ? db.diag() : {});
       const shopify_test = shopify.testConnection ? await shopify.testConnection() : { ok: false, error: "diag n/a" };
       const klaviyo_test = klaviyo.testConnection ? await klaviyo.testConnection() : { ok: false, error: "diag n/a" };
-      res.json({ ok: true, config: Object.assign({}, config, klaviyoCfg), shopify_test, klaviyo_test });
+      const db_test = db.testConnection ? await db.testConnection() : { ok: false, error: "diag n/a" };
+      res.json({ ok: true, config, shopify_test, klaviyo_test, db_test });
     } catch (e) { res.status(500).json({ error: String((e && e.message) || e) }); }
   });
 
-  // Kundenanliegen live aus Klaviyo (Chat-Eskalationen/Feedback/Adressänderungen).
+  /* ---------- Kundenanliegen: primär aus der DB (Mary schreibt), Fallback Klaviyo ---------- */
+
   app.get("/admin/anliegen", async (req, res) => {
-    try { res.json({ anliegen: await klaviyo.fetchAnliegen() }); }
-    catch (e) { res.status(502).json({ error: String((e && e.message) || e), anliegen: [] }); }
+    try {
+      if (db.configured()) return res.json({ anliegen: await db.listAnliegen(), source: "db" });
+      res.json({ anliegen: await klaviyo.fetchAnliegen(), source: "klaviyo" });
+    } catch (e) { res.status(502).json({ error: String((e && e.message) || e), anliegen: [] }); }
   });
-  // Chat-Transkripte werden serverseitig nicht persistiert (Mary ist ephemer) → leer.
-  app.get("/admin/chats", (req, res) => res.json({ chats: [], note: "Mary speichert keine Transkripte (ephemer)" }));
+
+  app.patch("/admin/anliegen/:id", async (req, res) => {
+    try {
+      if (!db.configured()) return res.status(503).json({ error: "DB nicht konfiguriert" });
+      const status = req.body && req.body.status;
+      const ok = await db.updateAnliegenStatus(req.params.id, status);
+      if (!ok) return res.status(404).json({ error: "Anliegen nicht gefunden" });
+      res.json({ ok: true, status });
+    } catch (e) { res.status(400).json({ error: String((e && e.message) || e) }); }
+  });
+
+  app.delete("/admin/anliegen/:id", async (req, res) => {
+    try {
+      if (!db.configured()) return res.status(503).json({ error: "DB nicht konfiguriert" });
+      const ok = await db.deleteAnliegen(req.params.id);
+      if (!ok) return res.status(404).json({ error: "Anliegen nicht gefunden" });
+      res.json({ ok: true });
+    } catch (e) { res.status(502).json({ error: String((e && e.message) || e) }); }
+  });
+
+  /* ---------- Chat-Transkripte (Mary speichert; hier Suche/Ansicht/Löschung) ---------- */
+
+  app.get("/admin/chats", async (req, res) => {
+    try {
+      if (!db.configured()) return res.json({ chats: [], note: "DB nicht konfiguriert" });
+      const { q, from, to, limit, offset } = req.query;
+      const chats = await db.listChats({ qtext: q, from, to, limit: parseInt(limit, 10) || undefined, offset: parseInt(offset, 10) || undefined });
+      res.json({ chats });
+    } catch (e) { res.status(502).json({ error: String((e && e.message) || e), chats: [] }); }
+  });
+
+  app.get("/admin/chats/:id", async (req, res) => {
+    try {
+      if (!db.configured()) return res.status(503).json({ error: "DB nicht konfiguriert" });
+      const chat = await db.getChat(req.params.id);
+      if (!chat) return res.status(404).json({ error: "Chat nicht gefunden" });
+      res.json({ chat });
+    } catch (e) { res.status(502).json({ error: String((e && e.message) || e) }); }
+  });
+
+  app.delete("/admin/chats/:id", async (req, res) => {
+    try {
+      if (!db.configured()) return res.status(503).json({ error: "DB nicht konfiguriert" });
+      const ok = await db.deleteChat(req.params.id);
+      if (!ok) return res.status(404).json({ error: "Chat nicht gefunden" });
+      res.json({ ok: true });
+    } catch (e) { res.status(502).json({ error: String((e && e.message) || e) }); }
+  });
+
+  // Löschen pro Kunde: DELETE /admin/chats?email=… (oder orderName=/name=)
+  app.delete("/admin/chats", async (req, res) => {
+    try {
+      if (!db.configured()) return res.status(503).json({ error: "DB nicht konfiguriert" });
+      const { email, orderName, name } = req.query;
+      const n = await db.deleteChatsBy({ email, orderName, name });
+      res.json({ ok: true, deleted: n });
+    } catch (e) { res.status(400).json({ error: String((e && e.message) || e) }); }
+  });
 
   app.use((req, res) => res.status(404).json({ error: "not found" }));
   return app;

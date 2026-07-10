@@ -42,3 +42,6 @@ services:
         value: "2026-04-15"
       - key: KLAVIYO_PRIVATE_API_KEY
         sync: false
+      # Shared-DB (Neon): Anliegen + Chat-Transkripte lesen/verwalten (Mary schreibt)
+      - key: DATABASE_URL
+        sync: false

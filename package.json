@@ -4,16 +4,19 @@
   "description": "M.IRIS Cockpit — schlanker Admin-Dienst (Shopify-Proxy + Cloudinary-Löschung)",
   "type": "commonjs",
   "main": "server.js",
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node test.js"
   },
   "dependencies": {
     "cloudinary": "^2.5.1",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "express-rate-limit": "^7.4.1",
-    "helmet": "^8.0.0"
+    "helmet": "^8.0.0",
+    "pg": "^8.22.0"
   }
 }
