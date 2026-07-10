@@ -81,8 +81,59 @@ async function fetchAnliegen(limit) {
   return (data.data || []).map(mapEvent);
 }
 
+/* ---------- Schreiben: Event feuern (Muster wie Marys trackEvent) ---------- */
+
+const REPLY_METRIC = process.env.KLAVIYO_REPLY_METRIC || "MIRIS_ANLIEGEN_REPLY";
+
+async function trackEvent({ email, firstName, lastName, metricName, properties, uniqueId }) {
+  if (!email || !metricName) throw new Error("email und metricName erforderlich");
+  const payload = {
+    data: {
+      type: "event",
+      attributes: {
+        time: new Date().toISOString(),
+        unique_id: uniqueId,
+        properties: properties || {},
+        metric: { data: { type: "metric", attributes: { name: metricName } } },
+        profile: { data: { type: "profile", attributes: { email, first_name: firstName || "", last_name: lastName || "" } } },
+      },
+    },
+  };
+  const res = await fetch(BASE + "/events", {
+    method: "POST",
+    headers: Object.assign({}, headers(), { "Content-Type": "application/vnd.api+json" }),
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`Klaviyo Event ${res.status}: ${t.slice(0, 200)}`);
+  }
+  return { sent: true };
+}
+
+/**
+ * Antwort auf ein Anliegen als Klaviyo-Event ans KUNDEN-Profil.
+ * Die E-Mail verschickt der Klaviyo-Flow "MIRIS Anliegen Antwort"
+ * (Trigger-Metrik MIRIS_ANLIEGEN_REPLY, Template TjsM6Z).
+ */
+async function sendAnliegenReply({ email, customerName, thema, orderName, replyText, originalMessage, anliegenId }) {
+  return trackEvent({
+    email,
+    firstName: customerName || "",
+    metricName: REPLY_METRIC,
+    uniqueId: "anliegen-reply-" + anliegenId + "-" + Date.now(),
+    properties: {
+      reply_text: String(replyText).slice(0, 4000),
+      thema: thema || "",
+      order_name: orderName || "",
+      customer_name: customerName || "",
+      original_message: originalMessage ? String(originalMessage).slice(0, 1500) : "",
+    },
+  });
+}
+
 function diag() {
-  return { klaviyoKeySet: !!(process.env.KLAVIYO_PRIVATE_API_KEY || "").trim(), metricName: METRIC_NAME, revision: REVISION };
+  return { klaviyoKeySet: !!(process.env.KLAVIYO_PRIVATE_API_KEY || "").trim(), metricName: METRIC_NAME, replyMetric: REPLY_METRIC, revision: REVISION };
 }
 async function testConnection() {
   try {
@@ -94,4 +145,4 @@ async function testConnection() {
   }
 }
 
-module.exports = { fetchAnliegen, resolveMetricId, mapEvent, deriveKind, diag, testConnection };
+module.exports = { fetchAnliegen, resolveMetricId, mapEvent, deriveKind, trackEvent, sendAnliegenReply, diag, testConnection };

@@ -113,6 +113,29 @@ function createApp(deps) {
     } catch (e) { res.status(400).json({ error: String((e && e.message) || e) }); }
   });
 
+  // Antwort auf ein Anliegen: E-Mail an den Kunden (Klaviyo-Flow) + in der DB protokollieren.
+  app.post("/admin/anliegen/:id/reply", async (req, res) => {
+    try {
+      if (!db.configured()) return res.status(503).json({ error: "DB nicht konfiguriert" });
+      const replyText = String((req.body && req.body.reply_text) || "").trim();
+      if (replyText.length < 2) return res.status(400).json({ error: "reply_text erforderlich" });
+      const anliegen = await db.getAnliegen(req.params.id);
+      if (!anliegen) return res.status(404).json({ error: "Anliegen nicht gefunden" });
+      if (!anliegen.customerEmail) return res.status(422).json({ error: "Anliegen hat keine Kunden-E-Mail" });
+      await klaviyo.sendAnliegenReply({
+        email: anliegen.customerEmail,
+        customerName: anliegen.customerName,
+        thema: anliegen.thema,
+        orderName: anliegen.relatedOrder,
+        replyText,
+        originalMessage: anliegen.nachricht,
+        anliegenId: anliegen.id,
+      });
+      const row = await db.appendAnliegenReply(anliegen.id, replyText);
+      res.json({ ok: true, status: "beantwortet", to: anliegen.customerEmail, logged: !!row });
+    } catch (e) { res.status(502).json({ error: String((e && e.message) || e) }); }
+  });
+
   app.delete("/admin/anliegen/:id", async (req, res) => {
     try {
       if (!db.configured()) return res.status(503).json({ error: "DB nicht konfiguriert" });

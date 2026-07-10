@@ -66,7 +66,8 @@ const MOCK_ORDERS = [ m, shopify.mapOrder({ id: "gid://shopify/Order/1", name: "
 const deleted = [];
 const mockShopify = { fetchOrders: async () => MOCK_ORDERS, deriveImages: shopify.deriveImages, tagOrderDeleted: async () => {} };
 const mockCloud = { deleteImage: async (id) => { deleted.push(id); return { result: "ok" }; } };
-const mockKlaviyo = { fetchAnliegen: async () => [klaviyo.mapEvent(evEscalation), klaviyo.mapEvent(evFeedback), klaviyo.mapEvent(evAddr)], diag: () => ({ klaviyoKeySet: true }), testConnection: async () => ({ ok: true }) };
+const sentReplies = [];
+const mockKlaviyo = { fetchAnliegen: async () => [klaviyo.mapEvent(evEscalation), klaviyo.mapEvent(evFeedback), klaviyo.mapEvent(evAddr)], sendAnliegenReply: async (x) => { sentReplies.push(x); return { sent: true }; }, diag: () => ({ klaviyoKeySet: true }), testConnection: async () => ({ ok: true }) };
 
 // DB-Mock (Shared-DB-Schicht): Anliegen + Chats in-memory, gleiche API wie db.js
 function makeMockDb(configuredFlag) {
@@ -150,6 +151,18 @@ async function run() {
     ok("PATCH invalid status = 400", r.status === 400);
     r = await fetch(base + "/admin/anliegen/nope", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ status: "neu" }) });
     ok("PATCH unknown id = 404", r.status === 404);
+    console.log("\n[3b2] Anliegen beantworten");
+    r = await fetch(base + "/admin/anliegen/an1/reply", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ reply_text: "Wir schicken dir kostenlos eine Ersatzperle zu!" }) });
+    const rep = await r.json();
+    ok("POST reply = 200 + beantwortet", r.status === 200 && rep.status === "beantwortet", JSON.stringify(rep));
+    ok("Klaviyo-Event an Kunden-E-Mail gefeuert", sentReplies.length === 1 && sentReplies[0].email === "k@x.de", JSON.stringify(sentReplies[0] || {}));
+    ok("Reply-Event trägt thema + originalMessage", sentReplies[0].thema === "Fehlende Perle" && /fehlt eine Perle/.test(sentReplies[0].originalMessage));
+    ok("Reply in DB protokolliert + Status beantwortet", mockDb._anliegen.find(a => a.id === "an1").replies.length === 1 && mockDb._anliegen.find(a => a.id === "an1").status === "beantwortet");
+    r = await fetch(base + "/admin/anliegen/an1/reply", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ reply_text: "" }) });
+    ok("POST reply ohne Text = 400", r.status === 400);
+    r = await fetch(base + "/admin/anliegen/nope/reply", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ reply_text: "hi" }) });
+    ok("POST reply unbekannte id = 404", r.status === 404);
+
     r = await fetch(base + "/admin/anliegen/an2", { method: "DELETE", headers: { Authorization: B } });
     ok("DELETE anliegen = 200", r.status === 200);
     ok("anliegen really deleted", mockDb._anliegen.length === 1);
