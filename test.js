@@ -64,10 +64,25 @@ ok("empty order_name → relatedOrder null", klaviyo.mapEvent(evFeedback).relate
 /* ---- 2/3. Endpoints (auth, CORS, mapping, delete) ---- */
 const MOCK_ORDERS = [ m, shopify.mapOrder({ id: "gid://shopify/Order/1", name: "B1001", createdAt: "2026-05-28T16:26:02Z", tags: [], displayFinancialStatus: "PAID", displayFulfillmentStatus: "FULFILLED", totalPriceSet: { shopMoney: { amount: "0.0", currencyCode: "EUR" } }, customer: {}, metafields: { edges: [] }, lineItems: { edges: [] }, fulfillments: [] }) ];
 const deleted = [];
-const mockShopify = { fetchOrders: async () => MOCK_ORDERS, deriveImages: shopify.deriveImages, tagOrderDeleted: async () => {} };
+const actions = [];
+const mockShopify = {
+  fetchOrders: async () => MOCK_ORDERS, deriveImages: shopify.deriveImages, tagOrderDeleted: async () => {},
+  addOrderTag: async (name, tag) => { actions.push(["tag", name, tag]); return { id: "gid://x/1", tag }; },
+  markOrderPaid: async (name) => { actions.push(["paid", name]); return { id: "gid://x/1", financialStatus: "PAID" }; },
+  fulfillOrder: async (name, nr, co) => {
+    if (name === "B1023") { const e = new Error("Versendet markieren: bereits storniert"); e.userErrors = [{ message: "bereits storniert" }]; throw e; }
+    actions.push(["fulfill", name, nr, co]); return { id: "gid://x/1", fulfillmentId: "gid://x/F1" };
+  },
+  cancelOrder: async (name, o) => { actions.push(["cancel", name, o]); return { id: "gid://x/1", jobId: "gid://x/J1" }; },
+  getOrderPreviewData: async (name) => name === "B1023"
+    ? { id: "gid://x/2", name, email: "k@x.de", firstName: "K", customerName: "K X", miris: {} }
+    : { id: "gid://x/1", name, email: "k@x.de", firstName: "K", customerName: "K X", miris: { approval_url: "https://m-iris.de/apps/vorschau?x", preview_url: "https://res.cloudinary.com/x.jpg" } },
+  setPreviewSentNow: async () => { actions.push(["previewSentAt"]); },
+};
 const mockCloud = { deleteImage: async (id) => { deleted.push(id); return { result: "ok" }; } };
 const sentReplies = [];
-const mockKlaviyo = { fetchAnliegen: async () => [klaviyo.mapEvent(evEscalation), klaviyo.mapEvent(evFeedback), klaviyo.mapEvent(evAddr)], sendAnliegenReply: async (x) => { sentReplies.push(x); return { sent: true }; }, diag: () => ({ klaviyoKeySet: true }), testConnection: async () => ({ ok: true }) };
+const sentEvents = [];
+const mockKlaviyo = { fetchAnliegen: async () => [klaviyo.mapEvent(evEscalation), klaviyo.mapEvent(evFeedback), klaviyo.mapEvent(evAddr)], sendAnliegenReply: async (x) => { sentReplies.push(x); return { sent: true }; }, trackEvent: async (x) => { sentEvents.push(x); return { sent: true }; }, diag: () => ({ klaviyoKeySet: true }), testConnection: async () => ({ ok: true }) };
 
 // DB-Mock (Shared-DB-Schicht): Anliegen + Chats in-memory, gleiche API wie db.js
 function makeMockDb(configuredFlag) {
@@ -188,6 +203,28 @@ async function run() {
     ok("all chats gone", mockDb._chats.length === 0);
     r = await fetch(base + "/admin/chats", { method: "DELETE", headers: { Authorization: B } });
     ok("DELETE chats without filter = 400", r.status === 400);
+
+    console.log("\n[3e] Bestell-Aktionen");
+    r = await fetch(base + "/admin/orders/B1027/mahnung", { method: "POST", headers: { Authorization: B } });
+    ok("POST mahnung = 200 + Tag MAHNUNG", r.status === 200 && actions.some(a => a[0] === "tag" && a[1] === "B1027" && a[2] === "MAHNUNG"));
+    r = await fetch(base + "/admin/orders/B1027/mark-paid", { method: "POST", headers: { Authorization: B } });
+    ok("POST mark-paid = 200 → PAID", r.status === 200 && (await r.json()).financialStatus === "PAID");
+    r = await fetch(base + "/admin/orders/B1027/fulfill", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ trackingNumber: "12345", trackingCompany: "DHL" }) });
+    ok("POST fulfill = 200 mit Tracking", r.status === 200 && actions.some(a => a[0] === "fulfill" && a[2] === "12345" && a[3] === "DHL"));
+    r = await fetch(base + "/admin/orders/B1023/fulfill", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({}) });
+    ok("POST fulfill mit userErrors = 422", r.status === 422 && Array.isArray((await r.json()).userErrors));
+    r = await fetch(base + "/admin/orders/B1027/cancel", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ refund: true, restock: true }) });
+    ok("POST cancel = 200", r.status === 200 && actions.some(a => a[0] === "cancel"));
+    r = await fetch(base + "/admin/orders/B1027/resend-preview", { method: "POST", headers: { Authorization: B } });
+    const rp = await r.json();
+    ok("POST resend-preview = 200 an Kunden-E-Mail", r.status === 200 && rp.to === "k@x.de", JSON.stringify(rp));
+    const pv = sentEvents.find(e => e.metricName === "MIRIS_PREVIEW_SENT");
+    ok("MIRIS_PREVIEW_SENT-Event mit approval_url + 24h-Frist", !!pv && /vorschau/.test(pv.properties.approval_url) && pv.properties.deadline_hours === 24);
+    ok("preview_sent_at in Shopify angeglichen", actions.some(a => a[0] === "previewSentAt"));
+    r = await fetch(base + "/admin/orders/B1023/resend-preview", { method: "POST", headers: { Authorization: B } });
+    ok("resend-preview ohne Vorschau = 422", r.status === 422);
+    r = await fetch(base + "/admin/orders/B1027/mahnung", { method: "POST" });
+    ok("Aktion ohne Token = 401", r.status === 401);
 
     console.log("\n[3d] Fallback ohne DB (Klaviyo-Quelle)");
     {

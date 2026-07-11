@@ -83,6 +83,84 @@ function createApp(deps) {
     } catch (e) { res.status(502).json({ error: String((e && e.message) || e) }); }
   });
 
+  /* ---------- Bestell-Aktionen (P3) ---------- */
+
+  // Fehler-Mapper: userErrors → 422 (fachlich), Scope-/Zugriffsfehler klar benennen, sonst 502.
+  const actionError = (res, e) => {
+    const msg = String((e && e.message) || e);
+    if (e && e.userErrors) return res.status(422).json({ error: msg, userErrors: e.userErrors });
+    if (/ACCESS_DENIED|access denied|permission|scope/i.test(msg)) {
+      return res.status(403).json({ error: "Shopify-Berechtigung fehlt (App-Scopes im Dev-Dashboard erweitern): " + msg.slice(0, 220) });
+    }
+    res.status(502).json({ error: msg.slice(0, 300) });
+  };
+
+  app.post("/admin/orders/:name/mahnung", async (req, res) => {
+    try {
+      const r = await shopify.addOrderTag(req.params.name, "MAHNUNG");
+      res.json({ ok: true, tagged: r.tag });
+    } catch (e) { actionError(res, e); }
+  });
+
+  app.post("/admin/orders/:name/mark-paid", async (req, res) => {
+    try {
+      const r = await shopify.markOrderPaid(req.params.name);
+      res.json({ ok: true, financialStatus: r.financialStatus });
+    } catch (e) { actionError(res, e); }
+  });
+
+  app.post("/admin/orders/:name/fulfill", async (req, res) => {
+    try {
+      const { trackingNumber, trackingCompany } = req.body || {};
+      const r = await shopify.fulfillOrder(req.params.name, trackingNumber, trackingCompany);
+      res.json({ ok: true, fulfillmentId: r.fulfillmentId });
+    } catch (e) { actionError(res, e); }
+  });
+
+  app.post("/admin/orders/:name/cancel", async (req, res) => {
+    try {
+      const { refund, restock, notify } = req.body || {};
+      const r = await shopify.cancelOrder(req.params.name, { refund, restock, notify });
+      res.json({ ok: true, jobId: r.jobId });
+    } catch (e) { actionError(res, e); }
+  });
+
+  // Vorschau-Mail erneut senden: feuert MIRIS_PREVIEW_SENT (bestehender Klaviyo-Flow "Farbvorschau bereit")
+  // mit frischer 24h-Frist und hält preview_sent_at in Shopify konsistent.
+  app.post("/admin/orders/:name/resend-preview", async (req, res) => {
+    try {
+      const o = await shopify.getOrderPreviewData(req.params.name);
+      if (!o.email) return res.status(422).json({ error: "Bestellung hat keine Kunden-E-Mail" });
+      if (!o.miris.approval_url || !o.miris.preview_url) {
+        return res.status(422).json({ error: "Für diese Bestellung gibt es noch keine Farbvorschau (approval_url/preview_url fehlt)" });
+      }
+      const now = new Date();
+      const deadline = new Date(now.getTime() + 24 * 3600 * 1000);
+      await klaviyo.trackEvent({
+        email: o.email,
+        firstName: o.firstName,
+        lastName: o.lastName,
+        metricName: "MIRIS_PREVIEW_SENT",
+        uniqueId: "resend-preview-" + o.name + "-" + now.getTime(),
+        properties: {
+          order_id: o.id,
+          order_name: o.name,
+          customer_name: o.customerName,
+          approval_url: o.miris.approval_url,
+          preview_url: o.miris.preview_url,
+          preview_sent_at: now.toISOString(),
+          deadline_at: deadline.toISOString(),
+          deadline_hours: 24,
+          brand: "M.iris",
+          event_source: "miris-cockpit-resend",
+        },
+      });
+      // Frist in Shopify angleichen (best effort — Mail ist schon raus)
+      try { await shopify.setPreviewSentNow(o.id, now.toISOString()); } catch (_) {}
+      res.json({ ok: true, to: o.email, deadlineAt: deadline.toISOString() });
+    } catch (e) { actionError(res, e); }
+  });
+
   // Diagnose: zeigt (ohne Secrets) die Konfiguration + testet Shopify-, Klaviyo- und DB-Verbindung.
   app.get("/admin/diag", async (req, res) => {
     try {

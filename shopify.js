@@ -146,13 +146,121 @@ function deriveImages(orders) {
 }
 
 const TAGS_ADD = `mutation($id: ID!, $tags: [String!]!) { tagsAdd(id: $id, tags: $tags) { userErrors { message } } }`;
-async function tagOrderDeleted(orderName) {
-  if (!orderName) return;
-  // Order-GID über name auflösen und Audit-Tag setzen (best effort)
-  const q = `query($q:String!){ orders(first:1, query:$q){ edges{ node{ id } } } }`;
+
+/** Order-GID über den Namen (z. B. "B1027") auflösen. */
+async function resolveOrderGid(orderName) {
+  const q = `query($q:String!){ orders(first:1, query:$q){ edges{ node{ id name } } } }`;
   const data = await adminGraphQL(q, { q: `name:${orderName}` });
   const node = data.orders.edges[0] && data.orders.edges[0].node;
-  if (node) await adminGraphQL(TAGS_ADD, { id: node.id, tags: ["augenbild-geloescht"] });
+  if (!node) throw new Error(`Bestellung ${orderName} nicht gefunden`);
+  return node.id;
+}
+
+/** userErrors einer Mutation prüfen — wirft mit lesbarer Meldung (Route → 422). */
+function assertNoUserErrors(payload, label) {
+  const errs = (payload && payload.userErrors) || (payload && payload.orderCancelUserErrors) || [];
+  if (errs.length) {
+    const e = new Error(label + ": " + errs.map((x) => x.message).join("; "));
+    e.userErrors = errs;
+    throw e;
+  }
+}
+
+async function tagOrderDeleted(orderName) {
+  if (!orderName) return;
+  // Audit-Tag setzen (best effort)
+  try {
+    const id = await resolveOrderGid(orderName);
+    await adminGraphQL(TAGS_ADD, { id, tags: ["augenbild-geloescht"] });
+  } catch (_) { /* nicht blockierend */ }
+}
+
+/* ---------- Bestell-Aktionen (P3) ---------- */
+
+/** Tag setzen (z. B. "MAHNUNG" → löst die bestehende Shopify-Flow→Klaviyo-Automation aus). */
+async function addOrderTag(orderName, tag) {
+  const id = await resolveOrderGid(orderName);
+  const data = await adminGraphQL(TAGS_ADD, { id, tags: [tag] });
+  assertNoUserErrors(data.tagsAdd, "Tag setzen");
+  return { id, tag };
+}
+
+/** Bestellung als bezahlt markieren (Banküberweisung eingegangen). */
+async function markOrderPaid(orderName) {
+  const id = await resolveOrderGid(orderName);
+  const M = `mutation($input: OrderMarkAsPaidInput!){ orderMarkAsPaid(input:$input){ order { id displayFinancialStatus } userErrors { field message } } }`;
+  const data = await adminGraphQL(M, { input: { id } });
+  assertNoUserErrors(data.orderMarkAsPaid, "Als bezahlt markieren");
+  return { id, financialStatus: data.orderMarkAsPaid.order && data.orderMarkAsPaid.order.displayFinancialStatus };
+}
+
+/** Bestellung stornieren. */
+async function cancelOrder(orderName, opts) {
+  const id = await resolveOrderGid(orderName);
+  const o = opts || {};
+  const M = `mutation($orderId: ID!, $notifyCustomer: Boolean, $refund: Boolean!, $restock: Boolean!, $reason: OrderCancelReason!){
+    orderCancel(orderId:$orderId, notifyCustomer:$notifyCustomer, refund:$refund, restock:$restock, reason:$reason){
+      job { id } orderCancelUserErrors { field message }
+    } }`;
+  const data = await adminGraphQL(M, {
+    orderId: id,
+    notifyCustomer: o.notify !== false,
+    refund: o.refund !== false,
+    restock: o.restock !== false,
+    reason: o.reason || "OTHER",
+  });
+  assertNoUserErrors(data.orderCancel, "Stornieren");
+  return { id, jobId: data.orderCancel.job && data.orderCancel.job.id };
+}
+
+/** Als versendet markieren mit Tracking (fulfillmentCreateV2, Kunde bekommt Shopify-Versandmail). */
+async function fulfillOrder(orderName, trackingNumber, trackingCompany) {
+  const id = await resolveOrderGid(orderName);
+  const Q = `query($id: ID!){ order(id:$id){ fulfillmentOrders(first:10){ edges{ node{ id status } } } } }`;
+  const qd = await adminGraphQL(Q, { id });
+  const fos = ((qd.order && qd.order.fulfillmentOrders && qd.order.fulfillmentOrders.edges) || [])
+    .map((e) => e.node)
+    .filter((n) => n.status === "OPEN" || n.status === "IN_PROGRESS");
+  if (!fos.length) throw new Error("Keine offene Versandposition gefunden (schon versendet oder storniert?)");
+  const M = `mutation($fulfillment: FulfillmentV2Input!){ fulfillmentCreateV2(fulfillment:$fulfillment){ fulfillment { id status } userErrors { field message } } }`;
+  const fulfillment = {
+    notifyCustomer: true,
+    lineItemsByFulfillmentOrder: fos.map((f) => ({ fulfillmentOrderId: f.id })),
+  };
+  if (trackingNumber) {
+    fulfillment.trackingInfo = { number: String(trackingNumber) };
+    if (trackingCompany) fulfillment.trackingInfo.company = String(trackingCompany);
+  }
+  const data = await adminGraphQL(M, { fulfillment });
+  assertNoUserErrors(data.fulfillmentCreateV2, "Versendet markieren");
+  return { id, fulfillmentId: data.fulfillmentCreateV2.fulfillment && data.fulfillmentCreateV2.fulfillment.id };
+}
+
+/** Daten für "Vorschau-Mail erneut senden" (E-Mail + miris-Metafelder). */
+async function getOrderPreviewData(orderName) {
+  const id = await resolveOrderGid(orderName);
+  const Q = `query($id: ID!){ order(id:$id){ id name email customer { email firstName lastName displayName }
+    metafields(namespace:"miris", first: 30){ edges{ node{ key value } } } } }`;
+  const data = await adminGraphQL(Q, { id });
+  const o = data.order;
+  const miris = {};
+  ((o.metafields && o.metafields.edges) || []).forEach((e) => { miris[e.node.key] = e.node.value; });
+  return {
+    id: o.id,
+    name: o.name,
+    email: o.email || (o.customer && o.customer.email) || "",
+    firstName: (o.customer && o.customer.firstName) || "",
+    lastName: (o.customer && o.customer.lastName) || "",
+    customerName: (o.customer && o.customer.displayName) || "",
+    miris,
+  };
+}
+
+/** preview_sent_at-Metafeld auf jetzt setzen (hält Auto-Freigabe-Frist konsistent zur Mail). */
+async function setPreviewSentNow(orderGid, iso) {
+  const M = `mutation($mf: [MetafieldsSetInput!]!){ metafieldsSet(metafields:$mf){ userErrors { field message } } }`;
+  const data = await adminGraphQL(M, { mf: [{ ownerId: orderGid, namespace: "miris", key: "preview_sent_at", type: "date_time", value: iso }] });
+  assertNoUserErrors(data.metafieldsSet, "preview_sent_at setzen");
 }
 
 /* ---------- Diagnose (verrät keine Secrets) ---------- */
@@ -186,4 +294,8 @@ async function testConnection() {
   }
 }
 
-module.exports = { adminGraphQL, getAccessToken, fetchOrders, mapOrder, deriveImages, cloudinaryPublicId, tagOrderDeleted, ORDERS_QUERY, diag, testConnection };
+module.exports = {
+  adminGraphQL, getAccessToken, fetchOrders, mapOrder, deriveImages, cloudinaryPublicId,
+  tagOrderDeleted, resolveOrderGid, addOrderTag, markOrderPaid, cancelOrder, fulfillOrder,
+  getOrderPreviewData, setPreviewSentNow, ORDERS_QUERY, diag, testConnection,
+};
