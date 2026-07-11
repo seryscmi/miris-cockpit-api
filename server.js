@@ -152,10 +152,28 @@ function createApp(deps) {
     res.status(502).json({ error: msg.slice(0, 300) });
   };
 
+  // Mahnung: Tag setzen (Markierung in Shopify) + Klaviyo-Event MIRIS_MAHNUNG feuern —
+  // der Flow "MIRIS Mahnung" schickt die Zahlungserinnerung mit dem bestehenden Template (S6xt5n).
   app.post("/admin/orders/:name/mahnung", async (req, res) => {
     try {
-      const r = await shopify.addOrderTag(req.params.name, "MAHNUNG");
-      res.json({ ok: true, tagged: r.tag });
+      const o = await shopify.getOrderPreviewData(req.params.name);
+      if (!o.email) return res.status(422).json({ error: "Bestellung hat keine Kunden-E-Mail" });
+      await shopify.addOrderTag(req.params.name, "MAHNUNG");
+      await klaviyo.trackEvent({
+        email: o.email,
+        firstName: o.firstName,
+        lastName: o.lastName,
+        metricName: process.env.KLAVIYO_MAHNUNG_METRIC || "MIRIS_MAHNUNG",
+        uniqueId: "mahnung-" + o.name + "-" + Date.now(),
+        properties: {
+          order_name: o.name,
+          amount: o.totalPrice.toFixed(2).replace(".", ","), // Template zeigt "{{ amount }} {{ currency }}"
+          currency: o.currency,
+          customer_name: o.customerName,
+          event_source: "miris-cockpit",
+        },
+      });
+      res.json({ ok: true, tagged: "MAHNUNG", to: o.email });
     } catch (e) { actionError(res, e); }
   });
 

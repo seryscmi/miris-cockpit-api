@@ -75,8 +75,8 @@ const mockShopify = {
   },
   cancelOrder: async (name, o) => { actions.push(["cancel", name, o]); return { id: "gid://x/1", jobId: "gid://x/J1" }; },
   getOrderPreviewData: async (name) => name === "B1023"
-    ? { id: "gid://x/2", name, email: "k@x.de", firstName: "K", customerName: "K X", miris: {} }
-    : { id: "gid://x/1", name, email: "k@x.de", firstName: "K", customerName: "K X", miris: { approval_url: "https://m-iris.de/apps/vorschau?x", preview_url: "https://res.cloudinary.com/x.jpg" } },
+    ? { id: "gid://x/2", name, email: "k@x.de", firstName: "K", customerName: "K X", totalPrice: 29.99, currency: "EUR", miris: {} }
+    : { id: "gid://x/1", name, email: "k@x.de", firstName: "K", customerName: "K X", totalPrice: 29.99, currency: "EUR", miris: { approval_url: "https://m-iris.de/apps/vorschau?x", preview_url: "https://res.cloudinary.com/x.jpg" } },
   setPreviewSentNow: async () => { actions.push(["previewSentAt"]); },
 };
 const mockCloud = { deleteImage: async (id) => { deleted.push(id); return { result: "ok" }; } };
@@ -226,6 +226,8 @@ async function run() {
     console.log("\n[3e] Bestell-Aktionen");
     r = await fetch(base + "/admin/orders/B1027/mahnung", { method: "POST", headers: { Authorization: B } });
     ok("POST mahnung = 200 + Tag MAHNUNG", r.status === 200 && actions.some(a => a[0] === "tag" && a[1] === "B1027" && a[2] === "MAHNUNG"));
+    const mahnEv = sentEvents.find(e => e.metricName === "MIRIS_MAHNUNG");
+    ok("MIRIS_MAHNUNG-Event mit amount/currency/order_name", !!mahnEv && mahnEv.properties.order_name === "B1027" && /,/.test(mahnEv.properties.amount) && mahnEv.properties.currency === "EUR", JSON.stringify(mahnEv && mahnEv.properties));
     r = await fetch(base + "/admin/orders/B1027/mark-paid", { method: "POST", headers: { Authorization: B } });
     ok("POST mark-paid = 200 → PAID", r.status === 200 && (await r.json()).financialStatus === "PAID");
     r = await fetch(base + "/admin/orders/B1027/fulfill", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ trackingNumber: "12345", trackingCompany: "DHL" }) });

@@ -236,10 +236,12 @@ async function fulfillOrder(orderName, trackingNumber, trackingCompany) {
   return { id, fulfillmentId: data.fulfillmentCreateV2.fulfillment && data.fulfillmentCreateV2.fulfillment.id };
 }
 
-/** Daten für "Vorschau-Mail erneut senden" (E-Mail + miris-Metafelder). */
+/** Kunden-/Bestelldaten für E-Mail-Aktionen (Vorschau erneut, Mahnung): E-Mail, Name, Betrag, miris-Metafelder. */
 async function getOrderPreviewData(orderName) {
   const id = await resolveOrderGid(orderName);
-  const Q = `query($id: ID!){ order(id:$id){ id name email customer { email firstName lastName displayName }
+  const Q = `query($id: ID!){ order(id:$id){ id name email
+    totalPriceSet { shopMoney { amount currencyCode } }
+    customer { email firstName lastName displayName }
     metafields(namespace:"miris", first: 30){ edges{ node{ key value } } } } }`;
   const data = await adminGraphQL(Q, { id });
   const o = data.order;
@@ -252,6 +254,8 @@ async function getOrderPreviewData(orderName) {
     firstName: (o.customer && o.customer.firstName) || "",
     lastName: (o.customer && o.customer.lastName) || "",
     customerName: (o.customer && o.customer.displayName) || "",
+    totalPrice: parseFloat((o.totalPriceSet && o.totalPriceSet.shopMoney && o.totalPriceSet.shopMoney.amount) || "0") || 0,
+    currency: (o.totalPriceSet && o.totalPriceSet.shopMoney && o.totalPriceSet.shopMoney.currencyCode) || "EUR",
     miris,
   };
 }
