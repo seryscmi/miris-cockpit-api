@@ -117,9 +117,10 @@ async function trackEvent({ email, firstName, lastName, metricName, properties, 
  * (Trigger-Metrik MIRIS_ANLIEGEN_REPLY, Template TjsM6Z).
  */
 async function sendAnliegenReply({ email, customerName, thema, orderName, replyText, originalMessage, anliegenId }) {
+  const firstName = String(customerName || "").trim().split(/\s+/)[0] || "";
   return trackEvent({
     email,
-    firstName: customerName || "",
+    firstName,
     metricName: REPLY_METRIC,
     uniqueId: "anliegen-reply-" + anliegenId + "-" + Date.now(),
     properties: {
@@ -127,6 +128,7 @@ async function sendAnliegenReply({ email, customerName, thema, orderName, replyT
       thema: thema || "",
       order_name: orderName || "",
       customer_name: customerName || "",
+      customer_first_name: firstName, // Anrede im Template: "Hallo {Vorname},"
       original_message: originalMessage ? String(originalMessage).slice(0, 1500) : "",
     },
   });
