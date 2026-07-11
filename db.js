@@ -161,6 +161,32 @@ async function deleteChatsBy({ email, orderName, name }) {
   return res.rowCount;
 }
 
+/* ---------- DSGVO (P4) ---------- */
+
+/** Augen-Daten aus OrderSnapshot-Cache entfernen (rawJson nullen). */
+async function scrubOrderSnapshots({ email, orderName }) {
+  const params = [];
+  const where = [];
+  if (email) { params.push(email); where.push(`LOWER(email)=LOWER($${params.length})`); }
+  if (orderName) { params.push(orderName); where.push(`"orderName"=$${params.length}`); }
+  if (!where.length) return 0;
+  const res = await q(`UPDATE "OrderSnapshot" SET "rawJson"=NULL WHERE ${where.join(" OR ")}`, params);
+  return res.rowCount;
+}
+
+async function insertErasureLog({ shop, email, orderName, actions }) {
+  await q(
+    `INSERT INTO "ErasureLog" (id, shop, email, "orderName", actions)
+     VALUES ('era_'||md5(random()::text||clock_timestamp()::text), $1, $2, $3, $4::jsonb)`,
+    [shop || "", email || null, orderName || null, JSON.stringify(actions || {})]
+  );
+}
+
+async function listErasureLog(limit) {
+  const res = await q(`SELECT id, email, "orderName", actions, "performedAt" FROM "ErasureLog" ORDER BY "performedAt" DESC LIMIT $1`, [Math.min(limit || 50, 200)]);
+  return res.rows;
+}
+
 /* ---------- Diagnose ---------- */
 
 async function testConnection() {
@@ -180,5 +206,6 @@ module.exports = {
   configured, listAnliegen, getAnliegen, updateAnliegenStatus, appendAnliegenReply,
   deleteAnliegen, deleteAnliegenByEmail,
   listChats, getChat, deleteChat, deleteChatsBy,
+  scrubOrderSnapshots, insertErasureLog, listErasureLog,
   testConnection, diag,
 };

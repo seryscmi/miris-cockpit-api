@@ -109,6 +109,10 @@ function makeMockDb(configuredFlag) {
     getChat: async (id) => chats.find(c => c.id === id || c.sessionId === id) || null,
     deleteChat: async (id) => { const i = chats.findIndex(c => c.id === id || c.sessionId === id); if (i < 0) return false; chats.splice(i, 1); return true; },
     deleteChatsBy: async ({ email, orderName, name }) => { if (!email && !orderName && !name) throw new Error("email, orderName oder name erforderlich"); const before = chats.length; for (let i = chats.length - 1; i >= 0; i--) { const c = chats[i]; if ((email && c.email === email) || (orderName && c.orderName === orderName) || (name && c.customerName === name)) chats.splice(i, 1); } return before - chats.length; },
+    _erasures: [],
+    scrubOrderSnapshots: async () => 1,
+    insertErasureLog: async function (row) { this._erasures.push(row); },
+    listErasureLog: async () => [],
     testConnection: async () => ({ ok: configuredFlag, anliegen: anliegen.length, chats: chats.length }),
     diag: () => ({ databaseUrlSet: configuredFlag }),
   };
@@ -203,6 +207,21 @@ async function run() {
     ok("all chats gone", mockDb._chats.length === 0);
     r = await fetch(base + "/admin/chats", { method: "DELETE", headers: { Authorization: B } });
     ok("DELETE chats without filter = 400", r.status === 400);
+
+    console.log("\n[3f] DSGVO-Ein-Klick");
+    // mockShopify.fetchOrders liefert B1027 (kunde cognacs…? nein: customerEmail aus mapOrder = seryschewmi@gmail.com laut Fixture) — nutze orderName-Pfad
+    r = await fetch(base + "/admin/dsgvo/erase", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ orderName: "B1027", email: "k@x.de", options: { klaviyo: false } }) });
+    const er = await r.json();
+    ok("POST erase = 200 mit Report", r.status === 200 && er.ok && er.report, JSON.stringify(er).slice(0, 120));
+    ok("Fotos gefunden+gelöscht (2 aus B1027)", er.report.photos && er.report.photos.found === 2 && er.report.photos.deleted === 2, JSON.stringify(er.report.photos));
+    ok("Cloudinary wirklich aufgerufen", deleted.length >= 3, "deleted=" + deleted.length);
+    ok("Order getaggt (augenfotos-geloescht)", actions.some(a => a[0] === "tag" && a[2] === "augenfotos-geloescht"));
+    ok("Chats+Anliegen+Snapshots im Report", !!er.report.chats && !!er.report.anliegen && !!er.report.snapshots, JSON.stringify(Object.keys(er.report)));
+    ok("ErasureLog geschrieben", mockDb._erasures.length === 1);
+    r = await fetch(base + "/admin/dsgvo/erase", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({}) });
+    ok("erase ohne email/orderName = 400", r.status === 400);
+    r = await fetch(base + "/admin/dsgvo/log", { headers: { Authorization: B } });
+    ok("GET dsgvo/log = 200", r.status === 200 && Array.isArray((await r.json()).log));
 
     console.log("\n[3e] Bestell-Aktionen");
     r = await fetch(base + "/admin/orders/B1027/mahnung", { method: "POST", headers: { Authorization: B } });

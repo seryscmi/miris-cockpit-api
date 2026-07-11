@@ -83,6 +83,63 @@ function createApp(deps) {
     } catch (e) { res.status(502).json({ error: String((e && e.message) || e) }); }
   });
 
+  /* ---------- DSGVO-Ein-Klick (P4) ---------- */
+
+  // Kompletter Kunden-Erase: Augenfotos (Cloudinary) + Chats + Anliegen + Snapshot-Cache + Klaviyo-Profil.
+  // Jeder Schritt einzeln abwählbar; Ergebnis-Report + Audit-Zeile (ErasureLog).
+  app.post("/admin/dsgvo/erase", async (req, res) => {
+    const { email, orderName, options } = req.body || {};
+    const opt = Object.assign({ photos: true, chats: true, anliegen: true, snapshots: true, klaviyo: false }, options || {});
+    if (!email && !orderName) return res.status(400).json({ error: "email oder orderName erforderlich" });
+    const report = {};
+    // 1) Augenfotos: passende Bestellungen finden, Cloudinary-Assets löschen, Order taggen
+    if (opt.photos) {
+      try {
+        const orders = await shopify.fetchOrders();
+        const matching = orders.filter((o) =>
+          (orderName && o.name === orderName) ||
+          (email && (o.customerEmail || "").toLowerCase() === String(email).toLowerCase()));
+        const images = shopify.deriveImages(matching);
+        let deleted = 0;
+        for (const im of images) {
+          try { await cloud.deleteImage(im.cloudinaryPublicId); deleted++; } catch (e) { /* einzeln tolerieren */ }
+        }
+        for (const o of matching) { try { await shopify.addOrderTag(o.name, "augenfotos-geloescht"); } catch (_) {} }
+        report.photos = { ok: true, found: images.length, deleted, orders: matching.map((o) => o.name) };
+      } catch (e) { report.photos = { ok: false, error: String(e.message).slice(0, 200) }; }
+    }
+    // 2) Chat-Verläufe
+    if (opt.chats && db.configured()) {
+      try { report.chats = { ok: true, deleted: await db.deleteChatsBy({ email, orderName }) }; }
+      catch (e) { report.chats = { ok: false, error: String(e.message).slice(0, 200) }; }
+    }
+    // 3) Anliegen
+    if (opt.anliegen && db.configured() && email) {
+      try { report.anliegen = { ok: true, deleted: await db.deleteAnliegenByEmail(email) }; }
+      catch (e) { report.anliegen = { ok: false, error: String(e.message).slice(0, 200) }; }
+    }
+    // 4) OrderSnapshot-Cache scrubben
+    if (opt.snapshots && db.configured()) {
+      try { report.snapshots = { ok: true, scrubbed: await db.scrubOrderSnapshots({ email, orderName }) }; }
+      catch (e) { report.snapshots = { ok: false, error: String(e.message).slice(0, 200) }; }
+    }
+    // 5) Klaviyo-Profil (inkl. aller Events) — braucht Data-Privacy-Scope am Key
+    if (opt.klaviyo && email) {
+      try { await klaviyo.requestProfileDeletion(email); report.klaviyo = { ok: true, requested: true }; }
+      catch (e) { report.klaviyo = { ok: false, error: String(e.message).slice(0, 200) }; }
+    }
+    // Audit
+    try { if (db.configured()) await db.insertErasureLog({ shop: "9zjzs5-ri.myshopify.com", email, orderName, actions: report }); } catch (_) {}
+    res.json({ ok: true, report });
+  });
+
+  app.get("/admin/dsgvo/log", async (req, res) => {
+    try {
+      if (!db.configured()) return res.json({ log: [] });
+      res.json({ log: await db.listErasureLog() });
+    } catch (e) { res.status(502).json({ error: String(e.message).slice(0, 200), log: [] }); }
+  });
+
   /* ---------- Bestell-Aktionen (P3) ---------- */
 
   // Fehler-Mapper: userErrors → 422 (fachlich), Scope-/Zugriffsfehler klar benennen, sonst 502.

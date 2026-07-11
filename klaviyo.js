@@ -134,6 +134,20 @@ async function sendAnliegenReply({ email, customerName, thema, orderName, replyT
   });
 }
 
+/** DSGVO: komplettes Klaviyo-Profil (inkl. aller Events) zur Löschung einreichen.
+ *  Braucht einen Key mit Data-Privacy-Schreibrecht. */
+async function requestProfileDeletion(email) {
+  const payload = { data: { type: "data-privacy-deletion-job", attributes: { profile: { data: { type: "profile", attributes: { email } } } } } };
+  const res = await fetch(BASE + "/data-privacy-deletion-jobs", {
+    method: "POST",
+    headers: Object.assign({}, headers(), { "Content-Type": "application/vnd.api+json" }),
+    body: JSON.stringify(payload),
+  });
+  if (res.status === 202 || res.ok) return { requested: true };
+  const t = await res.text().catch(() => "");
+  throw new Error(`Klaviyo Profil-Löschung ${res.status}: ${t.slice(0, 200)}`);
+}
+
 function diag() {
   return { klaviyoKeySet: !!(process.env.KLAVIYO_PRIVATE_API_KEY || "").trim(), metricName: METRIC_NAME, replyMetric: REPLY_METRIC, revision: REVISION };
 }
@@ -147,4 +161,4 @@ async function testConnection() {
   }
 }
 
-module.exports = { fetchAnliegen, resolveMetricId, mapEvent, deriveKind, trackEvent, sendAnliegenReply, diag, testConnection };
+module.exports = { fetchAnliegen, resolveMetricId, mapEvent, deriveKind, trackEvent, sendAnliegenReply, requestProfileDeletion, diag, testConnection };
