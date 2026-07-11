@@ -43,7 +43,8 @@ function createApp(deps) {
   const app = express();
   app.disable("x-powered-by");
   app.use(helmet());
-  app.use(express.json({ limit: "64kb" }));
+  // 20mb wegen Farbvorschau-Upload (base64); Ein-Nutzer-Dienst hinter Bearer+Rate-Limit.
+  app.use(express.json({ limit: "20mb" }));
 
   const origin = (process.env.ALLOWED_ORIGIN || "https://seryscmi.github.io").split(",").map((s) => s.trim());
   app.use(cors({ origin, methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"], allowedHeaders: ["Authorization", "Content-Type"], maxAge: 86400 }));
@@ -81,6 +82,84 @@ function createApp(deps) {
       Promise.resolve().then(() => shopify.tagOrderDeleted(orderName)).catch(() => {});
       res.json({ ok: true, result });
     } catch (e) { res.status(502).json({ error: String((e && e.message) || e) }); }
+  });
+
+  /* ---------- v2: Adresse/Kontakt bearbeiten ---------- */
+
+  app.patch("/admin/orders/:name/shipping", async (req, res) => {
+    try {
+      const { email, shippingAddress } = req.body || {};
+      const r = await shopify.updateShippingAddress(req.params.name, { email, shippingAddress });
+      res.json({ ok: true, updated: r.updated });
+    } catch (e) {
+      if (e && e.status) return res.status(e.status).json({ error: String(e.message) });
+      actionError(res, e);
+    }
+  });
+
+  /* ---------- v2: Farbvorschau komplett senden (Upload + Metafelder + Mail) ---------- */
+
+  app.post("/admin/orders/:name/send-preview", async (req, res) => {
+    try {
+      const { imageBase64, mimeType } = req.body || {};
+      const mime = String(mimeType || "").toLowerCase();
+      if (!imageBase64) return res.status(400).json({ error: "imageBase64 erforderlich" });
+      if (!["image/jpeg", "image/jpg", "image/png", "image/webp"].includes(mime)) {
+        return res.status(400).json({ error: "Nur JPG, PNG oder WebP erlaubt" });
+      }
+      const b64 = String(imageBase64).replace(/^data:[^;]+;base64,/, "");
+      if (b64.length * 0.75 > 15 * 1024 * 1024) return res.status(400).json({ error: "Bild größer als 15 MB" });
+      // 1) Cloudinary (Fehler hier → nichts wurde verändert)
+      const sanitized = req.params.name.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 80);
+      let up;
+      try {
+        up = await cloud.uploadImage(b64, { folder: "miris/farbvorschau", publicId: "order-" + sanitized + "-" + Date.now(), tags: ["miris", "farbvorschau", "cockpit-upload"], mime });
+      } catch (e) { return res.status(502).json({ error: "Upload fehlgeschlagen: " + String(e.message).slice(0, 200), stage: "cloudinary" }); }
+      // 2) Metafelder + Tags (Mary-Vertrag)
+      const sent = await shopify.sendPreviewComplete(req.params.name, up.secureUrl);
+      // 3) Klaviyo-Mail (Fehler hier → Metafelder stehen; "erneut senden" heilt)
+      try {
+        await klaviyo.trackEvent({
+          email: sent.order.email,
+          firstName: sent.order.firstName,
+          lastName: sent.order.lastName,
+          metricName: "MIRIS_PREVIEW_SENT",
+          uniqueId: "cockpit-preview-" + sent.order.name + "-" + Date.now(),
+          properties: {
+            order_id: sent.order.id,
+            order_name: sent.order.name,
+            customer_name: sent.order.customerName,
+            approval_url: sent.approvalUrl,
+            preview_url: sent.previewUrl,
+            preview_sent_at: sent.previewSentAt,
+            deadline_at: sent.deadlineAt,
+            deadline_hours: 24,
+            brand: "M.iris",
+            event_source: "miris-cockpit",
+          },
+        });
+      } catch (e) { return res.status(502).json({ error: "Vorschau gespeichert, aber Mail fehlgeschlagen: " + String(e.message).slice(0, 160), stage: "klaviyo", previewUrl: up.secureUrl }); }
+      res.json({ ok: true, to: sent.order.email, previewUrl: up.secureUrl, approvalUrl: sent.approvalUrl, deadlineAt: sent.deadlineAt });
+    } catch (e) {
+      if (e && e.status) return res.status(e.status).json({ error: String(e.message) });
+      actionError(res, e);
+    }
+  });
+
+  /* ---------- v2: freie Kunden-E-Mail ---------- */
+
+  app.post("/admin/customers/email", async (req, res) => {
+    try {
+      const { email, firstName, subject, message, orderName } = req.body || {};
+      const em = String(email || "").trim();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) return res.status(400).json({ error: "Gültige E-Mail erforderlich" });
+      const subj = String(subject || "").trim();
+      const msg = String(message || "").trim();
+      if (subj.length < 1 || subj.length > 200) return res.status(400).json({ error: "Betreff (1–200 Zeichen) erforderlich" });
+      if (msg.length < 1 || msg.length > 5000) return res.status(400).json({ error: "Nachricht (1–5000 Zeichen) erforderlich" });
+      await klaviyo.sendCustomerMail({ email: em, firstName, subject: subj, message: msg, orderName });
+      res.json({ ok: true, to: em });
+    } catch (e) { actionError(res, e); }
   });
 
   /* ---------- DSGVO-Ein-Klick (P4) ---------- */

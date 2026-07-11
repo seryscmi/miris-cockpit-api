@@ -78,11 +78,39 @@ const mockShopify = {
     ? { id: "gid://x/2", name, email: "k@x.de", firstName: "K", customerName: "K X", totalPrice: 29.99, currency: "EUR", miris: {} }
     : { id: "gid://x/1", name, email: "k@x.de", firstName: "K", customerName: "K X", totalPrice: 29.99, currency: "EUR", miris: { approval_url: "https://m-iris.de/apps/vorschau?x", preview_url: "https://res.cloudinary.com/x.jpg" } },
   setPreviewSentNow: async () => { actions.push(["previewSentAt"]); },
+  updateShippingAddress: async (name, { email, shippingAddress }) => {
+    if (shippingAddress && name === "B1001") { const e = new Error("Bestellung ist (teilweise) versendet – Adresse nicht änderbar"); e.status = 409; throw e; }
+    if (shippingAddress && (shippingAddress.country || shippingAddress.countryCode)) { const e = new Error("Land ist nicht änderbar"); e.status = 400; throw e; }
+    if (!email && !shippingAddress) { const e = new Error("email oder shippingAddress erforderlich"); e.status = 400; throw e; }
+    actions.push(["shipping", name, email || null, shippingAddress || null]);
+    return { id: "gid://x/1", updated: { email: !!email, address: !!shippingAddress } };
+  },
+  sendPreviewComplete: async (name, url) => {
+    actions.push(["previewComplete", name, url]);
+    const crypto = require("crypto");
+    const token = crypto.randomBytes(32).toString("hex");
+    return {
+      order: { id: "gid://x/1", name, email: "k@x.de", firstName: "K", lastName: "X", customerName: "K X" },
+      approvalUrl: "https://m-iris.de/apps/vorschau?order=gid&token=" + token,
+      previewUrl: url,
+      previewSentAt: new Date().toISOString(),
+      deadlineAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+    };
+  },
 };
-const mockCloud = { deleteImage: async (id) => { deleted.push(id); return { result: "ok" }; } };
+const uploads = [];
+const mockCloud = {
+  deleteImage: async (id) => { deleted.push(id); return { result: "ok" }; },
+  uploadImage: async (b64, opts) => {
+    if (b64 === "FAIL") throw new Error("simulierter Cloudinary-Ausfall");
+    uploads.push(opts);
+    return { secureUrl: "https://res.cloudinary.com/dg3k6nvwj/image/upload/v1/" + opts.publicId + ".jpg", publicId: opts.publicId, bytes: 1000 };
+  },
+};
 const sentReplies = [];
 const sentEvents = [];
-const mockKlaviyo = { fetchAnliegen: async () => [klaviyo.mapEvent(evEscalation), klaviyo.mapEvent(evFeedback), klaviyo.mapEvent(evAddr)], sendAnliegenReply: async (x) => { sentReplies.push(x); return { sent: true }; }, trackEvent: async (x) => { sentEvents.push(x); return { sent: true }; }, diag: () => ({ klaviyoKeySet: true }), testConnection: async () => ({ ok: true }) };
+const sentMails = [];
+const mockKlaviyo = { fetchAnliegen: async () => [klaviyo.mapEvent(evEscalation), klaviyo.mapEvent(evFeedback), klaviyo.mapEvent(evAddr)], sendAnliegenReply: async (x) => { sentReplies.push(x); return { sent: true }; }, sendCustomerMail: async (x) => { sentMails.push(x); return { sent: true }; }, trackEvent: async (x) => { if (x.email === "klaviyofail@x.de") throw new Error("simulierter Klaviyo-Ausfall"); sentEvents.push(x); return { sent: true }; }, diag: () => ({ klaviyoKeySet: true }), testConnection: async () => ({ ok: true }) };
 
 // DB-Mock (Shared-DB-Schicht): Anliegen + Chats in-memory, gleiche API wie db.js
 function makeMockDb(configuredFlag) {
@@ -246,6 +274,47 @@ async function run() {
     ok("resend-preview ohne Vorschau = 422", r.status === 422);
     r = await fetch(base + "/admin/orders/B1027/mahnung", { method: "POST" });
     ok("Aktion ohne Token = 401", r.status === 401);
+
+    console.log("\n[3g] v2: Adresse bearbeiten");
+    r = await fetch(base + "/admin/orders/B1027/shipping", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ shippingAddress: { firstName: "Max", lastName: "Muster", address1: "Neue Str. 1", zip: "41468", city: "Neuss" } }) });
+    ok("PATCH shipping (UNFULFILLED) = 200", r.status === 200 && actions.some(a => a[0] === "shipping" && a[1] === "B1027" && a[3] && a[3].address1 === "Neue Str. 1"));
+    r = await fetch(base + "/admin/orders/B1001/shipping", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ shippingAddress: { address1: "X" } }) });
+    ok("PATCH shipping auf versendete Order = 409", r.status === 409);
+    r = await fetch(base + "/admin/orders/B1001/shipping", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ email: "neu@kunde.de" }) });
+    ok("PATCH nur E-Mail auf versendete Order = 200", r.status === 200 && actions.some(a => a[0] === "shipping" && a[1] === "B1001" && a[2] === "neu@kunde.de"));
+    r = await fetch(base + "/admin/orders/B1027/shipping", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ shippingAddress: { country: "Österreich" } }) });
+    ok("PATCH mit Land = 400", r.status === 400);
+    r = await fetch(base + "/admin/orders/B1027/shipping", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({}) });
+    ok("PATCH ohne Felder = 400", r.status === 400);
+
+    console.log("\n[3h] v2: Farbvorschau senden");
+    const PNG = Buffer.from("fake-image-bytes-1234567890").toString("base64");
+    r = await fetch(base + "/admin/orders/B1027/send-preview", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ imageBase64: PNG, mimeType: "image/png" }) });
+    const sp = await r.json();
+    ok("POST send-preview = 200", r.status === 200 && sp.ok, JSON.stringify(sp).slice(0, 120));
+    ok("Cloudinary-Upload mit Ordner+publicId", uploads.some(u => u.folder === "miris/farbvorschau" && /^order-B1027-\d+$/.test(u.publicId)));
+    ok("sendPreviewComplete mit Upload-URL aufgerufen", actions.some(a => a[0] === "previewComplete" && a[1] === "B1027" && /cloudinary/.test(a[2])));
+    const pvEv = sentEvents.filter(e => e.metricName === "MIRIS_PREVIEW_SENT").pop();
+    ok("MIRIS_PREVIEW_SENT mit approval_url+deadline 24h", !!pvEv && /token=/.test(pvEv.properties.approval_url) && pvEv.properties.deadline_hours === 24 && (new Date(pvEv.properties.deadline_at) - new Date(pvEv.properties.preview_sent_at)) === 24 * 3600 * 1000, pvEv && JSON.stringify(Object.keys(pvEv.properties)));
+    r = await fetch(base + "/admin/orders/B1027/send-preview", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ imageBase64: PNG, mimeType: "image/gif" }) });
+    ok("send-preview mit GIF = 400", r.status === 400);
+    r = await fetch(base + "/admin/orders/B1027/send-preview", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ mimeType: "image/png" }) });
+    ok("send-preview ohne Bild = 400", r.status === 400);
+    const before = actions.filter(a => a[0] === "previewComplete").length;
+    r = await fetch(base + "/admin/orders/B1027/send-preview", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ imageBase64: "FAIL", mimeType: "image/png" }) });
+    const spf = await r.json();
+    ok("Cloudinary-Fail = 502 stage:cloudinary, KEINE Metafelder", r.status === 502 && spf.stage === "cloudinary" && actions.filter(a => a[0] === "previewComplete").length === before);
+
+    console.log("\n[3i] v2: freie Kunden-E-Mail");
+    r = await fetch(base + "/admin/customers/email", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ email: "kunde@test.de", firstName: "Lena Hoffmann", subject: "Frage zu deiner Bestellung B1027", message: "Hallo,\nwelche Augenfarbe wünschst du für Auge 2?", orderName: "B1027" }) });
+    ok("POST customers/email = 200", r.status === 200);
+    ok("sendCustomerMail mit subject+message+order", sentMails.length === 1 && sentMails[0].subject.includes("B1027") && /Augenfarbe/.test(sentMails[0].message) && sentMails[0].orderName === "B1027");
+    r = await fetch(base + "/admin/customers/email", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ email: "keine-mail", subject: "x", message: "y" }) });
+    ok("ungültige E-Mail = 400", r.status === 400);
+    r = await fetch(base + "/admin/customers/email", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ email: "a@b.de", subject: "", message: "y" }) });
+    ok("leerer Betreff = 400", r.status === 400);
+    r = await fetch(base + "/admin/customers/email", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ email: "a@b.de", subject: "x", message: "" }) });
+    ok("leere Nachricht = 400", r.status === 400);
 
     console.log("\n[3d] Fallback ohne DB (Klaviyo-Quelle)");
     {

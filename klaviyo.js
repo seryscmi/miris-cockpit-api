@@ -134,6 +134,26 @@ async function sendAnliegenReply({ email, customerName, thema, orderName, replyT
   });
 }
 
+/**
+ * Freie Kunden-E-Mail im M.IRIS-Stil: Event MIRIS_KUNDEN_MAIL ans Kundenprofil,
+ * der Klaviyo-Flow "MIRIS Nachricht" verschickt sie (Betreff = event.subject).
+ */
+async function sendCustomerMail({ email, firstName, subject, message, orderName }) {
+  return trackEvent({
+    email,
+    firstName: firstName || "",
+    metricName: process.env.KLAVIYO_KUNDEN_MAIL_METRIC || "MIRIS_KUNDEN_MAIL",
+    uniqueId: "kunden-mail-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    properties: {
+      subject: String(subject).slice(0, 200),
+      message: String(message).slice(0, 5000),
+      customer_first_name: String(firstName || "").trim().split(/\s+/)[0] || "",
+      order_name: orderName || "",
+      event_source: "miris-cockpit",
+    },
+  });
+}
+
 /** DSGVO: komplettes Klaviyo-Profil (inkl. aller Events) zur Löschung einreichen.
  *  Braucht einen Key mit Data-Privacy-Schreibrecht. */
 async function requestProfileDeletion(email) {
@@ -161,4 +181,4 @@ async function testConnection() {
   }
 }
 
-module.exports = { fetchAnliegen, resolveMetricId, mapEvent, deriveKind, trackEvent, sendAnliegenReply, requestProfileDeletion, diag, testConnection };
+module.exports = { fetchAnliegen, resolveMetricId, mapEvent, deriveKind, trackEvent, sendAnliegenReply, sendCustomerMail, requestProfileDeletion, diag, testConnection };

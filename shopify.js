@@ -69,10 +69,11 @@ query CockpitOrders($cursor: String) {
   orders(first: 50, sortKey: CREATED_AT, reverse: true, after: $cursor) {
     pageInfo { hasNextPage endCursor }
     edges { node {
-      id name createdAt tags
+      id name createdAt tags cancelledAt email phone
       displayFinancialStatus displayFulfillmentStatus
       totalPriceSet { shopMoney { amount currencyCode } }
       customer { email displayName }
+      shippingAddress { firstName lastName address1 address2 zip city country countryCodeV2 phone }
       metafields(namespace: "miris", first: 40) { edges { node { key value } } }
       lineItems(first: 20) { edges { node { title quantity customAttributes { key value } } } }
       fulfillments(first: 10) { trackingInfo { number url company } }
@@ -95,7 +96,9 @@ function mapOrder(node) {
   return {
     name: node.name,
     customerName: (node.customer && node.customer.displayName) || "",
-    customerEmail: (node.customer && node.customer.email) || "",
+    customerEmail: node.email || (node.customer && node.customer.email) || "",
+    cancelledAt: node.cancelledAt || null,
+    shippingAddress: node.shippingAddress || null,
     createdAt: node.createdAt,
     totalPrice: parseFloat((node.totalPriceSet && node.totalPriceSet.shopMoney && node.totalPriceSet.shopMoney.amount) || "0") || 0,
     currency: (node.totalPriceSet && node.totalPriceSet.shopMoney && node.totalPriceSet.shopMoney.currencyCode) || "EUR",
@@ -260,6 +263,92 @@ async function getOrderPreviewData(orderName) {
   };
 }
 
+/* ---------- Adresse/Kontakt bearbeiten (v2) — Muster aus Marys update_shipping_address ---------- */
+
+function sanitizeAddrField(v, max) {
+  return String(v == null ? "" : v).replace(/[\r\n\t<>]/g, "").replace(/\s+/g, " ").trim().slice(0, max || 100);
+}
+
+/**
+ * Lieferadresse und/oder Bestell-E-Mail ändern (orderUpdate).
+ * Guards: Adresse nur wenn nicht storniert UND UNFULFILLED; E-Mail immer erlaubt; Land unveränderbar.
+ */
+async function updateShippingAddress(orderName, { email, shippingAddress }) {
+  const id = await resolveOrderGid(orderName);
+  const Q = `query($id: ID!){ order(id:$id){ cancelledAt displayFulfillmentStatus shippingAddress { country } } }`;
+  const qd = await adminGraphQL(Q, { id });
+  const cur = qd.order || {};
+  const input = { id };
+  if (email) {
+    const em = sanitizeAddrField(email, 200);
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) { const e = new Error("Ungültige E-Mail-Adresse"); e.status = 400; throw e; }
+    input.email = em;
+  }
+  if (shippingAddress) {
+    if (cur.cancelledAt) { const e = new Error("Bestellung ist storniert – Adresse nicht änderbar"); e.status = 409; throw e; }
+    if (cur.displayFulfillmentStatus !== "UNFULFILLED") { const e = new Error("Bestellung ist (teilweise) versendet – Adresse nicht änderbar"); e.status = 409; throw e; }
+    if (shippingAddress.country || shippingAddress.countryCode) { const e = new Error("Land ist nicht änderbar"); e.status = 400; throw e; }
+    input.shippingAddress = {
+      firstName: sanitizeAddrField(shippingAddress.firstName, 60),
+      lastName: sanitizeAddrField(shippingAddress.lastName, 60),
+      address1: sanitizeAddrField(shippingAddress.address1, 120),
+      address2: sanitizeAddrField(shippingAddress.address2, 120),
+      zip: sanitizeAddrField(shippingAddress.zip, 20),
+      city: sanitizeAddrField(shippingAddress.city, 80),
+      phone: sanitizeAddrField(shippingAddress.phone, 40),
+      country: (cur.shippingAddress && cur.shippingAddress.country) || undefined, // Land bleibt
+    };
+  }
+  if (!input.email && !input.shippingAddress) { const e = new Error("email oder shippingAddress erforderlich"); e.status = 400; throw e; }
+  const M = `mutation($input: OrderInput!){ orderUpdate(input:$input){ order { id } userErrors { field message } } }`;
+  const data = await adminGraphQL(M, { input });
+  assertNoUserErrors(data.orderUpdate, "Adresse ändern");
+  if (input.shippingAddress) { try { await adminGraphQL(TAGS_ADD, { id, tags: ["adresse-geaendert"] }); } catch (_) {} }
+  return { id, updated: { email: !!input.email, address: !!input.shippingAddress } };
+}
+
+/* ---------- Farbvorschau komplett senden (v2) — Vertrag aus Marys app.preview-upload.jsx ---------- */
+
+const crypto = require("crypto");
+const PUBLIC_CUSTOMER_BASE_URL = process.env.PUBLIC_CUSTOMER_BASE_URL || "https://m-iris.de";
+
+/**
+ * Setzt nach dem Cloudinary-Upload alle 8 miris-Metafelder + Tags exakt wie Mary
+ * (Freigabeseite vergleicht sha256(token); 24h-Auto-Freigabe liest Tag+Status+preview_sent_at).
+ */
+async function sendPreviewComplete(orderName, previewUrl) {
+  const o = await getOrderPreviewData(orderName);
+  if (!o.email) { const e = new Error("Bestellung hat keine Kunden-E-Mail"); e.status = 422; throw e; }
+  const token = crypto.randomBytes(32).toString("hex");
+  const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+  const previewSentAt = new Date();
+  const approvalUrl = PUBLIC_CUSTOMER_BASE_URL + "/apps/vorschau?order=" + encodeURIComponent(o.id) + "&token=" + encodeURIComponent(token);
+  const M = `mutation($mf: [MetafieldsSetInput!]!, $id: ID!, $addTags: [String!]!, $removeTags: [String!]!){
+    metafieldsSet(metafields:$mf){ userErrors { field message } }
+    tagsAdd(id:$id, tags:$addTags){ userErrors { message } }
+    tagsRemove(id:$id, tags:$removeTags){ userErrors { message } }
+  }`;
+  const mf = [
+    { key: "approval_status", type: "single_line_text_field", value: "gesendet" },
+    { key: "preview_url", type: "url", value: previewUrl },
+    { key: "approval_url", type: "url", value: approvalUrl },
+    { key: "approval_token", type: "single_line_text_field", value: tokenHash },
+    { key: "preview_sent_at", type: "date_time", value: previewSentAt.toISOString() },
+    { key: "customer_decision", type: "single_line_text_field", value: "-" },
+    { key: "customer_feedback", type: "multi_line_text_field", value: "-" },
+    { key: "internal_note", type: "multi_line_text_field", value: "Farbvorschau über das Cockpit gesendet." },
+  ].map((m) => Object.assign({ ownerId: o.id, namespace: "miris" }, m));
+  const data = await adminGraphQL(M, { mf, id: o.id, addTags: ["Farbvorschau gesendet"], removeTags: ["Farbvorschau offen", "Anpassung gewünscht"] });
+  assertNoUserErrors(data.metafieldsSet, "Vorschau-Metafelder");
+  return {
+    order: o,
+    approvalUrl,
+    previewUrl,
+    previewSentAt: previewSentAt.toISOString(),
+    deadlineAt: new Date(previewSentAt.getTime() + 24 * 3600 * 1000).toISOString(),
+  };
+}
+
 /** preview_sent_at-Metafeld auf jetzt setzen (hält Auto-Freigabe-Frist konsistent zur Mail). */
 async function setPreviewSentNow(orderGid, iso) {
   const M = `mutation($mf: [MetafieldsSetInput!]!){ metafieldsSet(metafields:$mf){ userErrors { field message } } }`;
@@ -301,5 +390,6 @@ async function testConnection() {
 module.exports = {
   adminGraphQL, getAccessToken, fetchOrders, mapOrder, deriveImages, cloudinaryPublicId,
   tagOrderDeleted, resolveOrderGid, addOrderTag, markOrderPaid, cancelOrder, fulfillOrder,
-  getOrderPreviewData, setPreviewSentNow, ORDERS_QUERY, diag, testConnection,
+  getOrderPreviewData, setPreviewSentNow, updateShippingAddress, sendPreviewComplete,
+  ORDERS_QUERY, diag, testConnection,
 };
