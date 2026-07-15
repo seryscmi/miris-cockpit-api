@@ -45,3 +45,22 @@ services:
       # Shared-DB (Neon): Anliegen + Chat-Transkripte lesen/verwalten (Mary schreibt)
       - key: DATABASE_URL
         sync: false
+      # Zahlungsabgleich (Enable Banking / PSD2)
+      - key: ENABLE_BANKING_APP_ID
+        sync: false
+      - key: ENABLE_BANKING_PRIVATE_KEY
+        sync: false
+      - key: BANK_REDIRECT_URL
+        value: https://miris-cockpit-api.onrender.com/bank/callback
+      - key: BANK_ASPSP_NAME
+        sync: false
+      - key: BANK_ASPSP_COUNTRY
+        value: DE
+      - key: BANK_CONSENT_DAYS
+        value: "90"
+      - key: BANK_SYNC_SECRET
+        generateValue: true
+      # Sicher per Default: nur wenn AUSDRÜCKLICH "false" wird echt abgehakt. Fehlt/andere Werte = Dry-Run.
+      # Zum Scharfschalten nach der Verifikation: auf "false" setzen.
+      - key: BANK_DRYRUN
+        value: "true"

@@ -25,6 +25,8 @@ const defaultShopify = require("./shopify");
 const defaultCloud = require("./cloudinary");
 const defaultKlaviyo = require("./klaviyo");
 const defaultDb = require("./db");
+const defaultBank = require("./bank");
+const match = require("./match");
 
 function timingEqual(a, b) {
   const ab = Buffer.from(String(a || ""));
@@ -39,6 +41,13 @@ function createApp(deps) {
   const cloud = deps.cloud || defaultCloud;
   const klaviyo = deps.klaviyo || defaultKlaviyo;
   const db = deps.db || defaultDb;
+  const bank = deps.bank || defaultBank;
+
+  const SHOP = process.env.SHOPIFY_SHOP || "9zjzs5-ri.myshopify.com";
+  // SICHER PER DEFAULT: nur echtes Abhaken, wenn BANK_DRYRUN ausdrücklich auf false/0/no gesetzt ist.
+  // Fehlt/leer/„true" → Dry-Run (rechnet nur, markiert nichts). So kann eine vergessene ENV nie auto-markieren.
+  const BANK_DRYRUN = !/^(0|false|no|off)$/i.test(process.env.BANK_DRYRUN || "");
+  const BANK_MIN_SYNC_MS = 6 * 3600 * 1000; // 4/Tag-Cap der Bank respektieren
 
   const app = express();
   app.disable("x-powered-by");
@@ -50,6 +59,46 @@ function createApp(deps) {
   app.use(cors({ origin, methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"], allowedHeaders: ["Authorization", "Content-Type"], maxAge: 86400 }));
 
   app.get("/health", (req, res) => res.json({ ok: true, service: "miris-cockpit-api", ts: Date.now() }));
+
+  /* ---------- Bank-Zahlungsabgleich: öffentliche Routen (ohne Bearer) ---------- */
+
+  // Redirect-Ziel nach dem Enable-Banking-Consent. state timing-safe gegen pendingState.
+  app.get("/bank/callback", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const done = (title, msg) => res.status(200).send(
+      "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>" +
+      "<div style=\"font-family:system-ui;max-width:420px;margin:16vh auto;text-align:center;color:#1c1c1c\">" +
+      "<h1 style=\"font-size:20px;letter-spacing:.08em;text-transform:uppercase\">" + title + "</h1><p style=\"color:#555\">" + msg +
+      "</p><p style=\"margin-top:20px\"><a href=\"https://seryscmi.github.io/miris-cockpit/#/einstellungen\" style=\"color:#1c1c1c\">Zurück zum Cockpit</a></p></div>");
+    try {
+      if (req.query.error) return done("Nicht verbunden", "Der Consent wurde abgebrochen. Du kannst es erneut versuchen.");
+      const code = String(req.query.code || "");
+      const state = String(req.query.state || "");
+      if (!code) return done("Nicht verbunden", "Kein Autorisierungs-Code erhalten.");
+      const conn = await db.getBankConnection(SHOP);
+      if (!conn || !conn.pendingState || !timingEqual(state, conn.pendingState)) return done("Nicht verbunden", "Sicherheitsprüfung (state) fehlgeschlagen. Bitte im Cockpit neu starten.");
+      const sess = await bank.createSession(code);
+      const acc = (sess.accounts || []).find((a) => (a.currency || "EUR") === "EUR") || (sess.accounts || [])[0];
+      if (!acc) return done("Nicht verbunden", "Kein Konto in der Session gefunden.");
+      const ibanMasked = acc.iban ? acc.iban.slice(0, 4) + "…" + acc.iban.slice(-4) : "";
+      await db.activateBankConnection(SHOP, { sessionId: sess.sessionId, accountUid: acc.uid, ibanMasked, validUntil: conn.validUntil || null, aspspName: (sess.aspsp && sess.aspsp.name) || conn.aspspName });
+      done("Bank verbunden", "Dein Konto ist verbunden. Der Zahlungsabgleich läuft ab jetzt automatisch.");
+    } catch (e) {
+      done("Fehler", "Verbindung fehlgeschlagen: " + String((e && e.message) || e).slice(0, 160));
+    }
+  });
+
+  // Cron-Endpoint (cron-job.org, alle 6h). Secret via ?secret= ODER Header x-bank-sync-secret.
+  app.post("/jobs/bank-sync", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const configured = (process.env.BANK_SYNC_SECRET || "").trim();
+    const provided = String(req.query.secret || req.get("x-bank-sync-secret") || "");
+    if (!configured || !timingEqual(provided, configured)) return res.status(401).json({ ok: false, error: "unauthorized" });
+    try {
+      const out = await runBankSync({ force: /^(1|true|yes)$/i.test(req.query.force || ""), dryRun: /^(1|true|yes)$/i.test(req.query.dry || "") || undefined });
+      res.json(out);
+    } catch (e) { res.status(502).json({ ok: false, error: String((e && e.message) || e).slice(0, 300) }); }
+  });
 
   // Auth-Grenze für alles unter /admin
   const auth = (req, res, next) => {
@@ -419,6 +468,209 @@ function createApp(deps) {
       res.json({ ok: true, deleted: n });
     } catch (e) { res.status(400).json({ error: String((e && e.message) || e) }); }
   });
+
+  /* ---------- Bank-Zahlungsabgleich: Admin-Routen ---------- */
+
+  app.post("/admin/bank/connect", async (req, res) => {
+    try {
+      if (!bank.configured()) return res.status(503).json({ error: "Enable Banking nicht konfiguriert (ENV fehlt)" });
+      if (!db.configured()) return res.status(503).json({ error: "DB nicht konfiguriert" });
+      const state = crypto.randomBytes(24).toString("hex");
+      const aspspName = process.env.BANK_ASPSP_NAME || "Sparkasse";
+      const country = process.env.BANK_ASPSP_COUNTRY || "DE";
+      const started = await bank.startAuth({
+        redirectUrl: process.env.BANK_REDIRECT_URL,
+        aspspName, country,
+        validUntilDays: parseInt(process.env.BANK_CONSENT_DAYS, 10) || 90,
+        state, psuType: process.env.BANK_PSU_TYPE || "personal",
+      });
+      await db.upsertBankConnectionPending(SHOP, { aspspName, country, pendingState: state, pendingAuthId: started.authorizationId, validUntil: started.validUntil });
+      res.json({ url: started.url });
+    } catch (e) { actionError(res, e); }
+  });
+
+  // Verfügbare Banken (ASPSPs) auflisten — zum Ermitteln des exakten BANK_ASPSP_NAME beim Einrichten.
+  app.get("/admin/bank/aspsps", async (req, res) => {
+    try {
+      if (!bank.configured()) return res.status(503).json({ error: "Enable Banking nicht konfiguriert (ENV fehlt)" });
+      const list = await bank.listAspsps(req.query.country || process.env.BANK_ASPSP_COUNTRY || "DE");
+      const q = String(req.query.q || "").toLowerCase();
+      const out = (list || [])
+        .map((a) => ({ name: a.name, country: a.country, maxConsentDays: a.maximum_consent_validity ? Math.floor(a.maximum_consent_validity / 86400) : null }))
+        .filter((a) => !q || String(a.name || "").toLowerCase().includes(q));
+      res.json({ count: out.length, aspsps: out });
+    } catch (e) { actionError(res, e); }
+  });
+
+  app.get("/admin/bank/status", async (req, res) => {
+    try {
+      const configured = bank.configured();
+      if (!db.configured()) return res.json({ configured, connected: false });
+      const conn = await db.getBankConnection(SHOP);
+      const reviewCount = await db.countBankReview(SHOP).catch(() => 0);
+      const connected = !!(conn && conn.sessionId && conn.accountUid && conn.status === "active");
+      let daysUntilExpiry = null;
+      if (conn && conn.validUntil) daysUntilExpiry = Math.floor((new Date(conn.validUntil).getTime() - Date.now()) / 86400000);
+      const needsReconsent = !!(conn && (conn.status === "expired" || (daysUntilExpiry != null && daysUntilExpiry < 0)));
+      res.json({
+        configured, connected,
+        ibanMasked: (conn && conn.ibanMasked) || null,
+        aspspName: (conn && conn.aspspName) || null,
+        validUntil: (conn && conn.validUntil) || null,
+        lastSyncAt: (conn && conn.lastSyncAt) || null,
+        status: (conn && conn.status) || "none",
+        daysUntilExpiry, needsReconsent, reviewCount, dryRun: BANK_DRYRUN,
+      });
+    } catch (e) { res.status(502).json({ error: String((e && e.message) || e).slice(0, 200) }); }
+  });
+
+  app.post("/admin/bank/sync", async (req, res) => {
+    try {
+      const out = await runBankSync({ force: /^(1|true|yes)$/i.test(req.query.force || ""), dryRun: /^(1|true|yes)$/i.test(req.query.dry || "") || undefined });
+      res.json(out);
+    } catch (e) { actionError(res, e); }
+  });
+
+  app.get("/admin/bank/review", async (req, res) => {
+    try {
+      if (!db.configured()) return res.json({ review: [] });
+      res.json({ review: await db.listBankReview(SHOP) });
+    } catch (e) { res.status(502).json({ error: String((e && e.message) || e).slice(0, 200), review: [] }); }
+  });
+
+  app.post("/admin/bank/review/:dedupKey/resolve", async (req, res) => {
+    try {
+      if (!db.configured()) return res.status(503).json({ error: "DB nicht konfiguriert" });
+      const status = String((req.body && req.body.status) || "");
+      const orderName = (req.body && req.body.orderName) || null;
+      if (!["confirmed", "dismissed"].includes(status)) return res.status(400).json({ error: "status muss confirmed|dismissed sein" });
+      if (status === "confirmed") {
+        if (!orderName) return res.status(400).json({ error: "orderName erforderlich für confirmed" });
+        await shopify.markOrderPaid(orderName);
+        try { await shopify.addOrderTag(orderName, "bank-bezahlt-bestaetigt"); } catch (_) {}
+      }
+      const ok = await db.resolveBankTransaction(SHOP, req.params.dedupKey, status, orderName);
+      if (!ok) return res.status(404).json({ error: "Eintrag nicht gefunden" });
+      res.json({ ok: true, status });
+    } catch (e) { actionError(res, e); }
+  });
+
+  // Serialisiert gleichzeitige Läufe (Cron + manuell) im selben Prozess: verhindert das
+  // Check-then-act-Race beim Dedup/markOrderPaid. (Render-Free = 1 Instanz → prozessweit ausreichend.)
+  let bankSyncChain = Promise.resolve();
+  function runBankSync(opts) {
+    const run = () => runBankSyncInner(opts);
+    const p = bankSyncChain.then(run, run);
+    bankSyncChain = p.then(() => {}, () => {});
+    return p;
+  }
+
+  /**
+   * Kernablauf: Umsätze holen → matchen → eindeutige exakte Treffer automatisch als bezahlt
+   * markieren, alles Unsichere in die Review-Liste. dryRun: nur rechnen, NICHTS schreiben/markieren.
+   */
+  async function runBankSyncInner(opts) {
+    opts = opts || {};
+    const dryRun = opts.dryRun != null ? opts.dryRun : BANK_DRYRUN;
+    if (!bank.configured()) return { ok: false, error: "Enable Banking nicht konfiguriert" };
+    if (!db.configured()) return { ok: false, error: "DB nicht konfiguriert" };
+    const conn = await db.getBankConnection(SHOP);
+    if (!conn || !conn.sessionId || !conn.accountUid) return { ok: false, needsConnect: true, error: "Bank nicht verbunden" };
+    if (conn.status === "expired") return { ok: false, needsReconsent: true, error: "Consent abgelaufen" };
+    if (conn.validUntil && new Date(conn.validUntil).getTime() < Date.now()) {
+      await db.expireBankConnection(SHOP); return { ok: false, needsReconsent: true, error: "Consent abgelaufen" };
+    }
+    if (!dryRun && !opts.force && conn.lastSyncAt && (Date.now() - new Date(conn.lastSyncAt).getTime()) < BANK_MIN_SYNC_MS) {
+      return { ok: true, skipped: true, reason: "rate_cap" };
+    }
+
+    let txns;
+    try { txns = await bank.listTransactions(conn.accountUid, 14); }
+    catch (e) {
+      if (e && e.code === "EXPIRED_SESSION") { await db.expireBankConnection(SHOP); return { ok: false, needsReconsent: true, error: "Consent abgelaufen" }; }
+      throw e;
+    }
+
+    const orders = await shopify.fetchOrders();
+    let unpaid = (orders || []).filter((o) =>
+      ["pending", "authorized", "partially_paid"].includes(String(o.financialStatus || "").toLowerCase()) && !o.cancelledAt);
+
+    const result = { ok: true, dryRun: !!dryRun, fetched: txns.length, autoPaid: [], review: 0, ignored: 0, skippedDup: 0, errors: [], preview: { autoPay: [], review: [], ignore: 0 } };
+
+    for (const txn of txns) {
+      if (txn.direction && txn.direction !== "CRDT") continue; // nur Eingänge
+      try {
+        if (!dryRun) {
+          const existing = await db.findBankTransaction(SHOP, txn.dedupKey);
+          if (existing) { result.skippedDup++; continue; }
+        }
+        let m = match.matchTransaction(txn, unpaid);
+
+        // Bestellnummer da, aber Bestellung außerhalb des 250-Fensters → gezielt nachladen
+        if (m.confidence === "none" && m.reason === "order_ref_not_in_window" && m.ref) {
+          let resolved = false;
+          try {
+            const od = await shopify.getOrderPreviewData(m.ref);
+            if (od && od.name) {
+              resolved = true;
+              // nur auto, wenn die nachgeladene Bestellung wirklich offen (unbezahlt, nicht storniert) ist
+              const odOpen = !od.cancelledAt && ["pending", "authorized", "partially_paid"].includes(String(od.financialStatus || "").toLowerCase());
+              const single = [{ name: od.name, totalPrice: od.totalPrice, currency: od.currency, customerName: od.customerName, shippingAddress: { firstName: od.firstName, lastName: od.lastName } }];
+              const m2 = match.matchTransaction(txn, single);
+              m = (m2.confidence === "order_number" && odOpen)
+                ? { orderName: od.name, confidence: "order_number", reason: "order_number_exact_lookup", ref: m.ref }
+                : { orderName: od.name, confidence: "ambiguous", reason: odOpen ? "order_ref_amount_mismatch_lookup" : "order_ref_not_open_lookup", ref: m.ref };
+            }
+          } catch (_) { /* nicht auffindbar */ }
+          if (!resolved) {
+            // Nummer zitiert, aber unauffindbar (Tippfehler/andere Nr) → Name/Betrag-Fallback, aber NIE auto
+            const stripped = Object.assign({}, txn, { remittance: String(txn.remittance || "").replace(/B\d{3,6}/gi, " ") });
+            const mf = match.matchTransaction(stripped, unpaid);
+            m = (mf.confidence === "order_number" || mf.confidence === "name")
+              ? { orderName: mf.orderName, confidence: "ambiguous", reason: "order_ref_unresolved_namehit", ref: m.ref }
+              : mf;
+          }
+        }
+
+        const excerpt = (txn.remittance || "").slice(0, 140);
+        const auto = (m.confidence === "order_number" || m.confidence === "name") && m.orderName;
+
+        if (dryRun) {
+          if (auto) result.preview.autoPay.push({ orderName: m.orderName, confidence: m.confidence, amount: txn.amount, payer: txn.payerName, remittance: excerpt });
+          else if (m.confidence === "ambiguous") result.preview.review.push({ orderName: m.orderName || null, reason: m.reason, amount: txn.amount, payer: txn.payerName, remittance: excerpt, candidates: m.candidates || null });
+          else result.preview.ignore++;
+          continue;
+        }
+
+        const base = { shop: SHOP, dedupKey: txn.dedupKey, amount: txn.amount, currency: txn.currency, bookingDate: txn.bookingDate, direction: txn.direction };
+        if (auto) {
+          try {
+            await shopify.markOrderPaid(m.orderName);
+            try { await shopify.addOrderTag(m.orderName, "bank-auto-bezahlt"); } catch (_) {}
+            await db.insertBankTransaction(Object.assign({}, base, { orderName: m.orderName, confidence: m.confidence, reason: m.reason, status: "auto_paid", payerName: null, remittanceExcerpt: null }));
+            unpaid = unpaid.filter((o) => o.name !== m.orderName); // aus dem Pool nehmen (kein Doppel-Mapping)
+            result.autoPaid.push(m.orderName);
+          } catch (e) {
+            await db.insertBankTransaction(Object.assign({}, base, { orderName: m.orderName, confidence: m.confidence, reason: "markpaid_failed", status: "review", payerName: txn.payerName, remittanceExcerpt: excerpt }));
+            result.review++; result.errors.push({ order: m.orderName, error: String(e.message).slice(0, 120) });
+          }
+        } else if (m.confidence === "ambiguous") {
+          await db.insertBankTransaction(Object.assign({}, base, { orderName: m.orderName || null, confidence: m.confidence, reason: m.reason, status: "review", payerName: txn.payerName, remittanceExcerpt: excerpt }));
+          result.review++;
+        } else {
+          await db.insertBankTransaction(Object.assign({}, base, { orderName: null, confidence: m.confidence, reason: m.reason, status: "ignored", payerName: null, remittanceExcerpt: null }));
+          result.ignored++;
+        }
+      } catch (e) { result.errors.push({ dedupKey: txn.dedupKey, error: String((e && e.message) || e).slice(0, 120) }); }
+    }
+
+    if (!dryRun) {
+      try { await db.touchBankSync(SHOP, new Date()); } catch (_) {}
+      // Retention: PII alter Review-Zeilen nullen (Buchungs-Fakt bleibt fürs Audit).
+      try { await db.purgeBankPII(parseInt(process.env.BANK_PII_RETENTION_DAYS, 10) || 90); } catch (_) {}
+    }
+    return result;
+  }
 
   app.use((req, res) => res.status(404).json({ error: "not found" }));
   return app;

@@ -187,6 +187,97 @@ async function listErasureLog(limit) {
   return res.rows;
 }
 
+/* ---------- Zahlungsabgleich (Bank) ---------- */
+
+async function getBankConnection(shop) {
+  const res = await q(`SELECT id, shop, "aspspName", country, "sessionId", "accountUid", "ibanMasked",
+    "validUntil", status, "pendingState", "pendingAuthId", "pendingAt", "lastSyncAt", "createdAt", "updatedAt"
+    FROM "BankConnection" WHERE shop=$1 LIMIT 1`, [shop]);
+  return res.rows[0] || null;
+}
+
+async function upsertBankConnectionPending(shop, { aspspName, country, pendingState, pendingAuthId, validUntil }) {
+  await q(
+    `INSERT INTO "BankConnection" (id, shop, "aspspName", country, status, "pendingState", "pendingAuthId", "validUntil", "pendingAt", "updatedAt")
+     VALUES ('bc_'||md5(random()::text||clock_timestamp()::text), $1, $2, $3, 'pending', $4, $5, $6, now(), now())
+     ON CONFLICT (shop) DO UPDATE SET "aspspName"=$2, country=$3, status='pending',
+       "pendingState"=$4, "pendingAuthId"=$5, "validUntil"=$6, "pendingAt"=now(), "updatedAt"=now()`,
+    [shop, aspspName || null, country || "DE", pendingState || null, pendingAuthId || null, validUntil || null]
+  );
+}
+
+async function activateBankConnection(shop, { sessionId, accountUid, ibanMasked, validUntil, aspspName }) {
+  await q(
+    `INSERT INTO "BankConnection" (id, shop, "aspspName", "sessionId", "accountUid", "ibanMasked", "validUntil", status, "pendingState", "pendingAuthId", "updatedAt")
+     VALUES ('bc_'||md5(random()::text||clock_timestamp()::text), $1, $2, $3, $4, $5, $6, 'active', NULL, NULL, now())
+     ON CONFLICT (shop) DO UPDATE SET "sessionId"=$3, "accountUid"=$4, "ibanMasked"=$5,
+       "validUntil"=$6, status='active', "pendingState"=NULL, "pendingAuthId"=NULL,
+       "aspspName"=COALESCE($2,"BankConnection"."aspspName"), "updatedAt"=now()`,
+    [shop, aspspName || null, sessionId, accountUid, ibanMasked || null, validUntil || null]
+  );
+}
+
+async function expireBankConnection(shop) {
+  await q(`UPDATE "BankConnection" SET status='expired', "updatedAt"=now() WHERE shop=$1`, [shop]);
+}
+
+async function touchBankSync(shop, ts) {
+  await q(`UPDATE "BankConnection" SET "lastSyncAt"=$2, "updatedAt"=now() WHERE shop=$1`, [shop, ts || new Date()]);
+}
+
+async function findBankTransaction(shop, dedupKey) {
+  const res = await q(`SELECT id, status, "orderName" FROM "BankTransaction" WHERE shop=$1 AND "dedupKey"=$2 LIMIT 1`, [shop, dedupKey]);
+  return res.rows[0] || null;
+}
+
+/** Idempotenter Insert. Rückgabe {inserted:bool}. Doppelte (shop,dedupKey) werden verschluckt. */
+async function insertBankTransaction(row) {
+  const res = await q(
+    `INSERT INTO "BankTransaction" (id, shop, "dedupKey", amount, currency, "bookingDate", direction,
+       "orderName", confidence, reason, status, "payerName", "remittanceExcerpt", "updatedAt")
+     VALUES ('bt_'||md5(random()::text||clock_timestamp()::text), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
+     ON CONFLICT (shop, "dedupKey") DO NOTHING`,
+    [row.shop, row.dedupKey, row.amount, row.currency || "EUR", row.bookingDate || null, row.direction || "CRDT",
+     row.orderName || null, row.confidence, row.reason, row.status, row.payerName || null, row.remittanceExcerpt || null]
+  );
+  return { inserted: res.rowCount > 0 };
+}
+
+async function listBankReview(shop) {
+  const res = await q(
+    `SELECT "dedupKey", amount, currency, "bookingDate", "orderName", confidence, reason,
+       "payerName", "remittanceExcerpt", "createdAt"
+     FROM "BankTransaction" WHERE shop=$1 AND status='review' ORDER BY "createdAt" DESC LIMIT 100`, [shop]);
+  return res.rows.map((r) => Object.assign({}, r, { amount: Number(r.amount) }));
+}
+
+async function countBankReview(shop) {
+  const res = await q(`SELECT COUNT(*)::int AS n FROM "BankTransaction" WHERE shop=$1 AND status='review'`, [shop]);
+  return res.rows[0] ? res.rows[0].n : 0;
+}
+
+/** Review auflösen (confirmed|dismissed) + PII scrubben. */
+async function resolveBankTransaction(shop, dedupKey, status, orderName) {
+  const res = await q(
+    `UPDATE "BankTransaction" SET status=$3, "orderName"=COALESCE($4,"orderName"),
+       "payerName"=NULL, "remittanceExcerpt"=NULL, "resolvedAt"=now(), "updatedAt"=now()
+     WHERE shop=$1 AND "dedupKey"=$2`,
+    [shop, dedupKey, status, orderName || null]
+  );
+  return res.rowCount > 0;
+}
+
+/** Retention: PII alter Zeilen nullen (Buchungs-Fakt bleibt für den Nachweis). */
+async function purgeBankPII(days) {
+  const res = await q(
+    `UPDATE "BankTransaction" SET "payerName"=NULL, "remittanceExcerpt"=NULL
+     WHERE ("payerName" IS NOT NULL OR "remittanceExcerpt" IS NOT NULL)
+       AND "createdAt" < now() - ($1 || ' days')::interval`,
+    [String(parseInt(days, 10) || 90)]
+  );
+  return res.rowCount;
+}
+
 /* ---------- Diagnose ---------- */
 
 async function testConnection() {
@@ -207,5 +298,8 @@ module.exports = {
   deleteAnliegen, deleteAnliegenByEmail,
   listChats, getChat, deleteChat, deleteChatsBy,
   scrubOrderSnapshots, insertErasureLog, listErasureLog,
+  getBankConnection, upsertBankConnectionPending, activateBankConnection, expireBankConnection,
+  touchBankSync, findBankTransaction, insertBankTransaction, listBankReview, countBankReview,
+  resolveBankTransaction, purgeBankPII,
   testConnection, diag,
 };

@@ -109,6 +109,7 @@ function mapOrder(node) {
     tracking: track.length ? track[0] : null,
     adminUrl: `https://admin.shopify.com/store/${storeHandle()}/orders/${numericId}`,
     isWiderruf: tags.some((t) => /widerruf|withdrawal/i.test(String(t))),
+    autoPaidByBank: tags.some((t) => /bank-auto-bezahlt|bank-bezahlt-bestaetigt/i.test(String(t))),
   };
 }
 
@@ -242,7 +243,7 @@ async function fulfillOrder(orderName, trackingNumber, trackingCompany) {
 /** Kunden-/Bestelldaten für E-Mail-Aktionen (Vorschau erneut, Mahnung): E-Mail, Name, Betrag, miris-Metafelder. */
 async function getOrderPreviewData(orderName) {
   const id = await resolveOrderGid(orderName);
-  const Q = `query($id: ID!){ order(id:$id){ id name email
+  const Q = `query($id: ID!){ order(id:$id){ id name email cancelledAt displayFinancialStatus
     totalPriceSet { shopMoney { amount currencyCode } }
     customer { email firstName lastName displayName }
     metafields(namespace:"miris", first: 30){ edges{ node{ key value } } } } }`;
@@ -254,6 +255,8 @@ async function getOrderPreviewData(orderName) {
     id: o.id,
     name: o.name,
     email: o.email || (o.customer && o.customer.email) || "",
+    cancelledAt: o.cancelledAt || null,
+    financialStatus: o.displayFinancialStatus || "",
     firstName: (o.customer && o.customer.firstName) || "",
     lastName: (o.customer && o.customer.lastName) || "",
     customerName: (o.customer && o.customer.displayName) || "",
