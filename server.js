@@ -88,8 +88,9 @@ function createApp(deps) {
     }
   });
 
-  // Cron-Endpoint (cron-job.org, alle 6h). Secret via ?secret= ODER Header x-bank-sync-secret.
-  app.post("/jobs/bank-sync", async (req, res) => {
+  // Cron-Endpoint (cron-job.org, alle 6–8h). Secret via ?secret= ODER Header x-bank-sync-secret.
+  // GET UND POST akzeptieren, damit der cron-job.org-„Testlauf" (GET) genauso klappt wie der Zeitplan (POST).
+  const bankSyncJob = async (req, res) => {
     res.set("Cache-Control", "no-store");
     const configured = (process.env.BANK_SYNC_SECRET || "").trim();
     const provided = String(req.query.secret || req.get("x-bank-sync-secret") || "");
@@ -108,7 +109,9 @@ function createApp(deps) {
         errors: Array.isArray(out.errors) ? out.errors.length : 0,
       });
     } catch (e) { res.status(502).json({ ok: false, error: String((e && e.message) || e).slice(0, 200) }); }
-  });
+  };
+  app.post("/jobs/bank-sync", bankSyncJob);
+  app.get("/jobs/bank-sync", bankSyncJob);
 
   // Auth-Grenze für alles unter /admin
   const auth = (req, res, next) => {
