@@ -96,8 +96,18 @@ function createApp(deps) {
     if (!configured || !timingEqual(provided, configured)) return res.status(401).json({ ok: false, error: "unauthorized" });
     try {
       const out = await runBankSync({ force: /^(1|true|yes)$/i.test(req.query.force || ""), dryRun: /^(1|true|yes)$/i.test(req.query.dry || "") || undefined });
-      res.json(out);
-    } catch (e) { res.status(502).json({ ok: false, error: String((e && e.message) || e).slice(0, 300) }); }
+      // Kompakte Antwort — cron-job.org begrenzt die Response-Größe ("Ausgabe zu groß").
+      // Die Details (Review-Liste, Audit) stehen ohnehin in der DB / im Cockpit.
+      res.json({
+        ok: out.ok, dryRun: !!out.dryRun, skipped: !!out.skipped, reason: out.reason || undefined,
+        needsConnect: out.needsConnect || undefined, needsReconsent: out.needsReconsent || undefined,
+        error: out.error || undefined,
+        fetched: out.fetched || 0,
+        autoPaid: Array.isArray(out.autoPaid) ? out.autoPaid.length : 0,
+        review: out.review || 0, ignored: out.ignored || 0, skippedDup: out.skippedDup || 0,
+        errors: Array.isArray(out.errors) ? out.errors.length : 0,
+      });
+    } catch (e) { res.status(502).json({ ok: false, error: String((e && e.message) || e).slice(0, 200) }); }
   });
 
   // Auth-Grenze für alles unter /admin
