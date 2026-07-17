@@ -620,15 +620,26 @@ async function primaryLocationId() {
   return _locId;
 }
 /** Bestand ("available") an der Haupt-Location setzen. items: [{inventoryItemId, quantity}]
- * 2026-07: InventorySetQuantitiesInput/InventoryQuantityInput haben KEIN
- * ignoreCompareQuantity / compareQuantity mehr → schlichtes, direktes Setzen. */
+ * 2026-07: InventoryQuantityInput verlangt PFLICHT-Feld changeFromQuantity (die aktuelle
+ * Menge, von der aus gesetzt wird). Also erst aktuelle Menge lesen, dann setzen. */
 async function setInventoryQuantities(items) {
   const clean = (items || [])
     .filter((x) => x && x.inventoryItemId && x.quantity != null && x.quantity !== "")
-    .map((x) => ({ inventoryItemId: String(x.inventoryItemId).startsWith("gid://") ? String(x.inventoryItemId) : `gid://shopify/InventoryItem/${numId(x.inventoryItemId)}`, quantity: Math.round(Number(x.quantity)) }));
+    .map((x) => ({ gid: String(x.inventoryItemId).startsWith("gid://") ? String(x.inventoryItemId) : `gid://shopify/InventoryItem/${numId(x.inventoryItemId)}`, quantity: Math.round(Number(x.quantity)) }));
   if (!clean.length) return [];
   const locationId = await primaryLocationId();
-  const quantities = clean.map((x) => ({ inventoryItemId: x.inventoryItemId, locationId, quantity: x.quantity }));
+  const q = await adminGraphQL(
+    `query($ids:[ID!]!, $loc:ID!){ nodes(ids:$ids){ ... on InventoryItem { id inventoryLevel(locationId:$loc){ quantities(names:["available"]){ name quantity } } } } }`,
+    { ids: clean.map((c) => c.gid), loc: locationId }
+  );
+  const currentById = {};
+  ((q && q.nodes) || []).forEach((n) => {
+    if (!n) return;
+    const lvl = n.inventoryLevel && n.inventoryLevel.quantities;
+    const av = Array.isArray(lvl) ? lvl.find((x) => x.name === "available") : null;
+    currentById[n.id] = av ? Number(av.quantity) : 0;
+  });
+  const quantities = clean.map((c) => ({ inventoryItemId: c.gid, locationId, quantity: c.quantity, changeFromQuantity: currentById[c.gid] != null ? currentById[c.gid] : 0 }));
   const M = `mutation($input:InventorySetQuantitiesInput!){ inventorySetQuantities(input:$input){ inventoryAdjustmentGroup{ createdAt } userErrors{ field message } } }`;
   const data = await adminGraphQL(M, { input: { name: "available", reason: "correction", quantities } });
   assertNoUserErrors(data.inventorySetQuantities, "Bestand speichern");
