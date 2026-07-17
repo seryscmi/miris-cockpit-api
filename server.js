@@ -394,6 +394,19 @@ function createApp(deps) {
     } catch (e) { actionError(res, e); }
   });
 
+  // Erstattung: erst Info (max. Betrag), dann ausführen
+  app.get("/admin/orders/:name/refund-info", async (req, res) => {
+    try { res.json(await shopify.getRefundInfo(req.params.name)); }
+    catch (e) { actionError(res, e); }
+  });
+  app.post("/admin/orders/:name/refund", async (req, res) => {
+    try {
+      const { amount, note, notify } = req.body || {};
+      const refund = await shopify.refundOrder(req.params.name, { amount, note, notify });
+      res.json({ ok: true, refund });
+    } catch (e) { actionError(res, e); }
+  });
+
   // Vorschau-Mail erneut senden: feuert MIRIS_PREVIEW_SENT (bestehender Klaviyo-Flow "Farbvorschau bereit")
   // mit frischer 24h-Frist und hält preview_sent_at in Shopify konsistent.
   app.post("/admin/orders/:name/resend-preview", async (req, res) => {

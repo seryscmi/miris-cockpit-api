@@ -184,6 +184,14 @@ const mockShopify = {
   },
   updateVariantPrices: async (pid, variants) => { actions.push(["updateVariantPrices", pid, variants]); return (variants || []).map((v) => ({ id: v.id, price: String(v.price) })); },
   setInventoryQuantities: async (items) => { actions.push(["setInventory", items]); return (items || []).map((x) => ({ inventoryItemId: x.inventoryItemId, quantity: x.quantity })); },
+  getRefundInfo: async (name) => ({ orderId: "gid://shopify/Order/1", name, maxRefundable: 49.99, currency: "EUR", parentTransactionId: "gid://shopify/OrderTransaction/1", gateway: "shopify_payments" }),
+  refundOrder: async (name, opts) => {
+    const amt = Number(opts.amount);
+    if (!(amt > 0)) { const e = new Error("Betrag muss größer als 0 sein"); e.userErrors = [{ message: e.message }]; throw e; }
+    if (amt > 49.99) { const e = new Error("Höchstens 49.99 EUR erstattbar"); e.userErrors = [{ message: e.message }]; throw e; }
+    actions.push(["refund", name, amt, opts.note || null]);
+    return { id: "gid://shopify/Refund/1", totalRefundedSet: { shopMoney: { amount: amt.toFixed(2), currencyCode: "EUR" } } };
+  },
 };
 const uploads = [];
 const mockCloud = {
@@ -343,6 +351,19 @@ async function run() {
     r = await fetch(base + "/admin/products/123", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ inventory: [{ inventoryItemId: "77", quantity: 30 }] }) });
     ok("PATCH mit Bestand = 200", r.status === 200);
     ok("PATCH ruft setInventoryQuantities", actions.some(a => a[0] === "setInventory" && a[1][0].inventoryItemId === "77" && a[1][0].quantity === 30));
+
+    console.log("\n[3m] Erstattung (Refund)");
+    r = await fetch(base + "/admin/orders/B1027/refund-info", { headers: { Authorization: B } });
+    const ri = await r.json();
+    ok("GET refund-info = 200 + maxRefundable", r.status === 200 && ri.maxRefundable === 49.99);
+    ok("refund-info ohne Auth = 401", (await fetch(base + "/admin/orders/B1027/refund-info")).status === 401);
+    r = await fetch(base + "/admin/orders/B1027/refund", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ amount: 10, note: "Kulanz" }) });
+    ok("POST refund 10 € = 200", r.status === 200);
+    ok("refund ruft refundOrder mit Betrag+Notiz", actions.some(a => a[0] === "refund" && a[2] === 10 && a[3] === "Kulanz"));
+    r = await fetch(base + "/admin/orders/B1027/refund", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ amount: 100 }) });
+    ok("Erstattung über Maximum → 422", r.status === 422, String(r.status));
+    r = await fetch(base + "/admin/orders/B1027/refund", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ amount: 0 }) });
+    ok("Erstattung 0 € → 422", r.status === 422);
     ok("cloud.deleteImage was called with publicId", deleted.includes("kunden-augenfotos/abc"), deleted.join(","));
 
     console.log("\n[3b] Anliegen (DB primär)");

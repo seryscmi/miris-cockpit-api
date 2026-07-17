@@ -648,6 +648,45 @@ async function setInventoryQuantities(items) {
   return quantities;
 }
 
+/* ---------- Erstattung (Phase 3: Refund) ---------- */
+/** Erstattungs-Infos: max. erstattbarer Betrag + Eltern-Transaktion (für das Modal). */
+async function getRefundInfo(orderName) {
+  const id = await resolveOrderGid(orderName);
+  const Q = `query($id:ID!){ order(id:$id){ id name currencyCode
+    totalReceivedSet{ shopMoney{ amount currencyCode } }
+    totalRefundedSet{ shopMoney{ amount } }
+    transactions(first:25){ id kind status gateway } } }`;
+  const data = await adminGraphQL(Q, { id });
+  const o = data.order;
+  if (!o) throw new Error("Bestellung nicht gefunden");
+  const received = Number((o.totalReceivedSet && o.totalReceivedSet.shopMoney && o.totalReceivedSet.shopMoney.amount) || 0);
+  const refunded = Number((o.totalRefundedSet && o.totalRefundedSet.shopMoney && o.totalRefundedSet.shopMoney.amount) || 0);
+  const currency = (o.totalReceivedSet && o.totalReceivedSet.shopMoney && o.totalReceivedSet.shopMoney.currencyCode) || o.currencyCode || "EUR";
+  const maxRefundable = Math.max(0, Math.round((received - refunded) * 100) / 100);
+  const success = (o.transactions || []).filter((t) => /SALE|CAPTURE/i.test(t.kind || "") && /SUCCESS/i.test(t.status || ""));
+  const parent = success[success.length - 1] || null;
+  return { orderId: o.id, name: o.name, maxRefundable, currency, parentTransactionId: parent && parent.id, gateway: parent && parent.gateway };
+}
+/** Betrag erstatten (Teil oder voll). opts: {amount, note, notify} */
+async function refundOrder(orderName, opts) {
+  opts = opts || {};
+  const info = await getRefundInfo(orderName);
+  const amount = Math.round(Number(opts.amount) * 100) / 100;
+  if (!(amount > 0)) { const e = new Error("Betrag muss größer als 0 sein"); e.userErrors = [{ message: e.message }]; throw e; }
+  if (amount > info.maxRefundable + 0.001) { const e = new Error(`Höchstens ${info.maxRefundable.toFixed(2)} ${info.currency} erstattbar`); e.userErrors = [{ message: e.message }]; throw e; }
+  if (!info.parentTransactionId) { const e = new Error("Keine erstattbare Zahlung gefunden"); e.userErrors = [{ message: e.message }]; throw e; }
+  const input = {
+    orderId: info.orderId,
+    notify: opts.notify !== false,
+    note: opts.note ? String(opts.note).slice(0, 255) : undefined,
+    transactions: [{ orderId: info.orderId, parentId: info.parentTransactionId, gateway: info.gateway, kind: "REFUND", amount: amount.toFixed(2) }],
+  };
+  const M = `mutation($input:RefundInput!){ refundCreate(input:$input){ refund{ id totalRefundedSet{ shopMoney{ amount currencyCode } } } userErrors{ field message } } }`;
+  const data = await adminGraphQL(M, { input });
+  assertNoUserErrors(data.refundCreate, "Erstattung");
+  return data.refundCreate.refund;
+}
+
 module.exports = {
   adminGraphQL, getAccessToken, fetchOrders, mapOrder, deriveImages, cloudinaryPublicId,
   tagOrderDeleted, resolveOrderGid, addOrderTag, markOrderPaid, cancelOrder, fulfillOrder,
@@ -655,5 +694,6 @@ module.exports = {
   fetchProducts, fetchProduct, mapProductRow, mapProductDetail,
   fetchDiscounts, mapDiscount, fetchCustomers, mapCustomerRow, fetchCustomer, fetchCustomerByEmail, mapCustomerDetail,
   updateProduct, updateVariantPrices, setInventoryQuantities, primaryLocationId,
+  getRefundInfo, refundOrder,
   ORDERS_QUERY, diag, testConnection,
 };
