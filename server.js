@@ -145,6 +145,30 @@ function createApp(deps) {
     } catch (e) { actionError(res, e); }
   });
 
+  /* ---------- Rabatte (Phase 1: lesen) ---------- */
+  app.get("/admin/discounts", async (req, res) => {
+    try { res.json({ discounts: await shopify.fetchDiscounts({ limit: req.query.limit }) }); }
+    catch (e) { actionError(res, e); }
+  });
+
+  /* ---------- Kunden (Phase 1: echte Shopify-Datensätze lesen) ---------- */
+  app.get("/admin/customers", async (req, res) => {
+    try { res.json({ customers: await shopify.fetchCustomers({ query: req.query.q, limit: req.query.limit }) }); }
+    catch (e) { actionError(res, e); }
+  });
+  // by-email MUSS vor :id stehen, sonst fängt :id "by-email" ab.
+  app.get("/admin/customers/by-email", async (req, res) => {
+    try { res.json({ customer: await shopify.fetchCustomerByEmail(req.query.email) }); }
+    catch (e) { actionError(res, e); }
+  });
+  app.get("/admin/customers/:id", async (req, res) => {
+    try {
+      const customer = await shopify.fetchCustomer(req.params.id);
+      if (!customer) return res.status(404).json({ error: "Kunde nicht gefunden" });
+      res.json({ customer });
+    } catch (e) { actionError(res, e); }
+  });
+
   app.get("/admin/images", async (req, res) => {
     try { const orders = await shopify.fetchOrders(); res.json({ images: shopify.deriveImages(orders) }); }
     catch (e) { res.status(502).json({ error: String((e && e.message) || e) }); }

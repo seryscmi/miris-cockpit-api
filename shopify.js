@@ -4,7 +4,7 @@
  * Der Admin-Token bleibt serverseitig (ENV). Der Browser sieht ihn nie.
  */
 
-const API_VERSION = process.env.SHOPIFY_API_VERSION || "2024-10";
+const API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-07";
 
 function shopDomain() {
   let s = (process.env.SHOPIFY_SHOP || "").trim();
@@ -479,10 +479,114 @@ async function fetchProduct(id) {
   return mapProductDetail(data.product);
 }
 
+/* ---------- Rabatte (Phase 1: lesen) ---------- */
+const DISCOUNTS_QUERY = `
+query Discounts($first:Int!){
+  discountNodes(first:$first, sortKey:CREATED_AT, reverse:true){
+    edges{ node{
+      id
+      discount{
+        __typename
+        ... on DiscountCodeBasic { title status startsAt endsAt asyncUsageCount codes(first:1){ edges{ node{ code } } } customerGets{ value{ __typename ... on DiscountPercentage{ percentage } ... on DiscountAmount{ amount{ amount currencyCode } } } } }
+        ... on DiscountCodeFreeShipping { title status startsAt endsAt asyncUsageCount codes(first:1){ edges{ node{ code } } } }
+        ... on DiscountCodeBxgy { title status startsAt endsAt asyncUsageCount codes(first:1){ edges{ node{ code } } } }
+        ... on DiscountAutomaticBasic { title status startsAt endsAt customerGets{ value{ __typename ... on DiscountPercentage{ percentage } ... on DiscountAmount{ amount{ amount currencyCode } } } } }
+        ... on DiscountAutomaticFreeShipping { title status startsAt endsAt }
+        ... on DiscountAutomaticBxgy { title status startsAt endsAt }
+      }
+    } }
+  }
+}`;
+function discountValue(d) {
+  if (/FreeShipping/.test(d.__typename || "")) return { type: "free_shipping" };
+  const v = d.customerGets && d.customerGets.value;
+  if (!v) return null;
+  if (v.__typename === "DiscountPercentage" && v.percentage != null) { const p = Number(v.percentage); return { type: "percentage", amount: p <= 1 ? Math.round(p * 100) : Math.round(p) }; }
+  if (v.__typename === "DiscountAmount" && v.amount) return { type: "amount", amount: Number(v.amount.amount), currency: v.amount.currencyCode };
+  return null;
+}
+function mapDiscount(node) {
+  const d = node.discount || {};
+  const t = d.__typename || "";
+  const code = (d.codes && d.codes.edges && d.codes.edges[0] && d.codes.edges[0].node.code) || null;
+  return {
+    id: numId(node.id), gid: node.id,
+    title: d.title || code || "Rabatt",
+    code,
+    kind: /^DiscountCode/.test(t) ? "code" : "automatic",
+    type: t,
+    status: String(d.status || "").toLowerCase(), // active | expired | scheduled
+    value: discountValue(d),
+    usage: d.asyncUsageCount == null ? null : Number(d.asyncUsageCount),
+    startsAt: d.startsAt || null, endsAt: d.endsAt || null,
+  };
+}
+async function fetchDiscounts(opts) {
+  opts = opts || {};
+  const first = Math.min(Math.max(Number(opts.limit) || 50, 1), 100);
+  const data = await adminGraphQL(DISCOUNTS_QUERY, { first });
+  return ((data.discountNodes && data.discountNodes.edges) || []).map((e) => mapDiscount(e.node)).filter((x) => x.title || x.code);
+}
+
+/* ---------- Kunden (Phase 1: echte Shopify-Kundendatensätze lesen) ---------- */
+const CUSTOMERS_QUERY = `
+query Customers($first:Int!, $query:String){
+  customers(first:$first, sortKey:UPDATED_AT, reverse:true, query:$query){
+    edges{ node{ id legacyResourceId displayName firstName lastName email phone numberOfOrders amountSpent{ amount currencyCode } tags createdAt updatedAt } }
+  }
+}`;
+function mapCustomerRow(n) {
+  const spent = n.amountSpent;
+  return {
+    id: n.legacyResourceId != null ? String(n.legacyResourceId) : numId(n.id), gid: n.id,
+    name: n.displayName || ((n.firstName || "") + " " + (n.lastName || "")).trim() || n.email || "—",
+    email: n.email || "", phone: n.phone || "",
+    ordersCount: Number(n.numberOfOrders || 0),
+    amountSpent: spent ? Number(spent.amount) : 0, currency: spent ? spent.currencyCode : "EUR",
+    tags: Array.isArray(n.tags) ? n.tags : [],
+    createdAt: n.createdAt || null, updatedAt: n.updatedAt || null,
+  };
+}
+async function fetchCustomers(opts) {
+  opts = opts || {};
+  const first = Math.min(Math.max(Number(opts.limit) || 100, 1), 250);
+  const query = opts.query ? String(opts.query).slice(0, 200) : null;
+  const data = await adminGraphQL(CUSTOMERS_QUERY, { first, query });
+  return ((data.customers && data.customers.edges) || []).map((e) => mapCustomerRow(e.node));
+}
+const CUSTOMER_DETAIL_FIELDS = `id legacyResourceId displayName firstName lastName email phone note tags numberOfOrders amountSpent{ amount currencyCode } createdAt verifiedEmail emailMarketingConsent{ marketingState } defaultAddress{ address1 address2 zip city province country }`;
+function mapCustomerDetail(n) {
+  if (!n) return null;
+  const row = mapCustomerRow(n);
+  return Object.assign(row, {
+    note: n.note || "",
+    marketingState: (n.emailMarketingConsent && n.emailMarketingConsent.marketingState) || null,
+    verifiedEmail: !!n.verifiedEmail,
+    defaultAddress: n.defaultAddress ? { address1: n.defaultAddress.address1 || "", address2: n.defaultAddress.address2 || "", zip: n.defaultAddress.zip || "", city: n.defaultAddress.city || "", province: n.defaultAddress.province || "", country: n.defaultAddress.country || "" } : null,
+    adminUrl: `https://admin.shopify.com/store/${storeHandle()}/customers/${row.id}`,
+  });
+}
+async function fetchCustomerByEmail(email) {
+  const e = String(email || "").trim();
+  if (!e) return null;
+  const Q = `query($q:String!){ customers(first:1, query:$q){ edges{ node{ ${CUSTOMER_DETAIL_FIELDS} } } } }`;
+  const data = await adminGraphQL(Q, { q: `email:${e}` });
+  const node = data.customers && data.customers.edges[0] && data.customers.edges[0].node;
+  return mapCustomerDetail(node);
+}
+async function fetchCustomer(id) {
+  const s = String(id || "");
+  const gid = s.startsWith("gid://") ? s : `gid://shopify/Customer/${numId(s)}`;
+  const Q = `query($id:ID!){ customer(id:$id){ ${CUSTOMER_DETAIL_FIELDS} } }`;
+  const data = await adminGraphQL(Q, { id: gid });
+  return mapCustomerDetail(data.customer);
+}
+
 module.exports = {
   adminGraphQL, getAccessToken, fetchOrders, mapOrder, deriveImages, cloudinaryPublicId,
   tagOrderDeleted, resolveOrderGid, addOrderTag, markOrderPaid, cancelOrder, fulfillOrder,
   getOrderPreviewData, setPreviewSentNow, updateShippingAddress, sendPreviewComplete,
   fetchProducts, fetchProduct, mapProductRow, mapProductDetail,
+  fetchDiscounts, mapDiscount, fetchCustomers, mapCustomerRow, fetchCustomer, fetchCustomerByEmail, mapCustomerDetail,
   ORDERS_QUERY, diag, testConnection,
 };

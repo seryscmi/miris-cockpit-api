@@ -84,6 +84,37 @@ ok("detail images mapped", pd.images.length === 1 && /i1\.jpg/.test(pd.images[0]
 ok("detail options mapped", pd.options[0].name === "Ausführung" && pd.options[0].values.length === 2);
 ok("detail null → null", shopify.mapProductDetail(null) === null);
 
+/* ---- 1d. Rabatt-Mapping (lesen) ---- */
+console.log("\n[1d] Shopify mapDiscount");
+const discPct = shopify.mapDiscount({ id: "gid://shopify/DiscountCodeNode/5", discount: { __typename: "DiscountCodeBasic", title: "Sommer", status: "ACTIVE", startsAt: "2026-06-01", endsAt: null, asyncUsageCount: 12, codes: { edges: [{ node: { code: "SOMMER10" } }] }, customerGets: { value: { __typename: "DiscountPercentage", percentage: 0.1 } } } });
+ok("discount code parsed", discPct.code === "SOMMER10", discPct.code);
+ok("discount kind = code", discPct.kind === "code");
+ok("discount status lowercased", discPct.status === "active");
+ok("discount % value (0.1 → 10)", discPct.value && discPct.value.type === "percentage" && discPct.value.amount === 10, JSON.stringify(discPct.value));
+ok("discount usage count", discPct.usage === 12);
+const discPct2 = shopify.mapDiscount({ id: "x", discount: { __typename: "DiscountCodeBasic", title: "T", status: "ACTIVE", codes: { edges: [] }, customerGets: { value: { __typename: "DiscountPercentage", percentage: 15 } } } });
+ok("discount % value (15 → 15)", discPct2.value.amount === 15, JSON.stringify(discPct2.value));
+const discAmt = shopify.mapDiscount({ id: "y", discount: { __typename: "DiscountCodeBasic", title: "5off", status: "EXPIRED", codes: { edges: [{ node: { code: "5OFF" } }] }, customerGets: { value: { __typename: "DiscountAmount", amount: { amount: "5.0", currencyCode: "EUR" } } } } });
+ok("discount amount value", discAmt.value.type === "amount" && discAmt.value.amount === 5 && discAmt.value.currency === "EUR", JSON.stringify(discAmt.value));
+const discShip = shopify.mapDiscount({ id: "z", discount: { __typename: "DiscountAutomaticFreeShipping", title: "Gratis ab 50", status: "ACTIVE" } });
+ok("discount free-shipping + automatic", discShip.value.type === "free_shipping" && discShip.kind === "automatic");
+
+/* ---- 1e. Kunden-Mapping (echte Datensätze) ---- */
+console.log("\n[1e] Shopify mapCustomerRow / mapCustomerDetail");
+const custNode = { id: "gid://shopify/Customer/7", legacyResourceId: "7", displayName: "Michail S", firstName: "Michail", lastName: "S", email: "m@x.de", phone: "", numberOfOrders: "3", amountSpent: { amount: "149.97", currencyCode: "EUR" }, tags: ["VIP"], createdAt: "2026-01-01", updatedAt: "2026-07-01" };
+const cr = shopify.mapCustomerRow(custNode);
+ok("customer id = legacyResourceId", cr.id === "7", cr.id);
+ok("customer name = displayName", cr.name === "Michail S");
+ok("customer ordersCount number", cr.ordersCount === 3, String(cr.ordersCount));
+ok("customer amountSpent number", cr.amountSpent === 149.97, String(cr.amountSpent));
+ok("customer tags array", Array.isArray(cr.tags) && cr.tags[0] === "VIP");
+const cd = shopify.mapCustomerDetail(Object.assign({}, custNode, { note: "nett", emailMarketingConsent: { marketingState: "SUBSCRIBED" }, defaultAddress: { address1: "Weg 1", zip: "50667", city: "Köln", country: "Germany" } }));
+ok("customer detail note", cd.note === "nett");
+ok("customer marketingState", cd.marketingState === "SUBSCRIBED");
+ok("customer defaultAddress city", cd.defaultAddress && cd.defaultAddress.city === "Köln");
+ok("customer adminUrl", cd.adminUrl === "https://admin.shopify.com/store/9zjzs5-ri/customers/7", cd.adminUrl);
+ok("customer detail null → null", shopify.mapCustomerDetail(null) === null);
+
 /* ---- 1b. Klaviyo Anliegen-Mapping (echte Event-Form aus Klaviyo) ---- */
 console.log("\n[1b] Klaviyo mapEvent / deriveKind");
 const evEscalation = { id: "7fTk8gNxCd7", attributes: { datetime: "2026-07-04T15:01:58+00:00", event_properties: { customer_name: "Michail Seryschew", admin_subject: "Chat-Nachricht von Michail Seryschew", topic: "Fehlende Perle im Set", customer_email: "cognacs-gesprochen0t@icloud.com", order_name: "B1001", verified: true, message: "Im Set der Bestellung B1001 fehlt eine Perle. Kunde bittet um Lösung." } } };
@@ -141,6 +172,10 @@ const mockShopify = {
     return [{ id: "123", gid: "gid://shopify/Product/123", title: "Augenfarben-Armband", handle: "augenfarben-armband", status: "active", totalInventory: 42, image: null, priceMin: 49.99, priceMax: 79.99, currency: "EUR", updatedAt: "2026-07-01", adminUrl: "https://admin.shopify.com/store/9zjzs5-ri/products/123" }];
   },
   fetchProduct: async (id) => id === "404" ? null : { id: String(id), gid: "gid://shopify/Product/" + id, title: "Augenfarben-Armband", status: "active", priceMin: 49.99, priceMax: 79.99, currency: "EUR", descriptionHtml: "", images: [], options: [], collections: [], variants: [{ id: "9", gid: "gid://x/9", title: "Einzel", sku: "A-1", price: 49.99, inventoryQuantity: 5, options: [], inventoryItemId: "77" }] },
+  fetchDiscounts: async () => [{ id: "5", gid: "gid://x/5", title: "Sommer", code: "SOMMER10", kind: "code", type: "DiscountCodeBasic", status: "active", value: { type: "percentage", amount: 10 }, usage: 12, startsAt: null, endsAt: null }],
+  fetchCustomers: async (opts) => { actions.push(["customers", (opts && opts.query) || null]); return [{ id: "7", gid: "gid://x/7", name: "Michail S", email: "m@x.de", phone: "", ordersCount: 3, amountSpent: 149.97, currency: "EUR", tags: ["VIP"] }]; },
+  fetchCustomerByEmail: async (email) => email ? { id: "7", name: "Michail S", email, ordersCount: 3, amountSpent: 149.97, currency: "EUR", tags: ["VIP"], note: "nett", marketingState: "SUBSCRIBED", defaultAddress: { address1: "Weg 1", zip: "50667", city: "Köln", country: "Germany" }, adminUrl: "https://admin.shopify.com/store/9zjzs5-ri/customers/7" } : null,
+  fetchCustomer: async (id) => id === "404" ? null : { id: String(id), name: "Michail S", email: "m@x.de", ordersCount: 3, amountSpent: 149.97, currency: "EUR", tags: [], adminUrl: "x" },
 };
 const uploads = [];
 const mockCloud = {
@@ -263,6 +298,28 @@ async function run() {
     r = await fetch(sb + "/admin/products", { headers: { Authorization: B } });
     ok("Scope-Fehler → 403", r.status === 403, String(r.status));
     ss.close();
+
+    console.log("\n[3k] Rabatte + Kunden (lesen)");
+    r = await fetch(base + "/admin/discounts");
+    ok("GET /admin/discounts without token = 401", r.status === 401);
+    r = await fetch(base + "/admin/discounts", { headers: { Authorization: B } });
+    const dj = await r.json();
+    ok("GET /admin/discounts = 200 + array", r.status === 200 && Array.isArray(dj.discounts) && dj.discounts.length === 1, "n=" + (dj.discounts || []).length);
+    ok("discount carries code + value", dj.discounts[0].code === "SOMMER10" && dj.discounts[0].value.amount === 10);
+    r = await fetch(base + "/admin/customers", { headers: { Authorization: B } });
+    const cj = await r.json();
+    ok("GET /admin/customers = 200 + array", r.status === 200 && Array.isArray(cj.customers) && cj.customers.length === 1);
+    ok("customer row carries amountSpent", cj.customers[0].amountSpent === 149.97);
+    r = await fetch(base + "/admin/customers?q=michail", { headers: { Authorization: B } });
+    ok("customers?q= passes query through", r.status === 200 && actions.some(a => a[0] === "customers" && a[1] === "michail"));
+    r = await fetch(base + "/admin/customers/by-email?email=m@x.de", { headers: { Authorization: B } });
+    const cbe = await r.json();
+    ok("GET /admin/customers/by-email = 200 + detail", r.status === 200 && cbe.customer && cbe.customer.marketingState === "SUBSCRIBED");
+    ok("by-email NOT captured by :id route", cbe.customer.note === "nett");
+    r = await fetch(base + "/admin/customers/7", { headers: { Authorization: B } });
+    ok("GET /admin/customers/:id = 200", r.status === 200);
+    r = await fetch(base + "/admin/customers/404", { headers: { Authorization: B } });
+    ok("GET /admin/customers/:id unknown = 404", r.status === 404);
     ok("cloud.deleteImage was called with publicId", deleted.includes("kunden-augenfotos/abc"), deleted.join(","));
 
     console.log("\n[3b] Anliegen (DB primär)");
