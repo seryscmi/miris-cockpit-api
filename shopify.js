@@ -640,8 +640,10 @@ async function setInventoryQuantities(items) {
     currentById[n.id] = av ? Number(av.quantity) : 0;
   });
   const quantities = clean.map((c) => ({ inventoryItemId: c.gid, locationId, quantity: c.quantity, changeFromQuantity: currentById[c.gid] != null ? currentById[c.gid] : 0 }));
-  const M = `mutation($input:InventorySetQuantitiesInput!){ inventorySetQuantities(input:$input){ inventoryAdjustmentGroup{ createdAt } userErrors{ field message } } }`;
-  const data = await adminGraphQL(M, { input: { name: "available", reason: "correction", quantities } });
+  // 2026-07 verlangt die @idempotent-Directive (Schutz vor Doppel-Buchung bei Retries).
+  const idemKey = crypto.randomUUID();
+  const M = `mutation($input:InventorySetQuantitiesInput!, $idemKey:String!){ inventorySetQuantities(input:$input) @idempotent(key:$idemKey){ inventoryAdjustmentGroup{ createdAt } userErrors{ field message } } }`;
+  const data = await adminGraphQL(M, { input: { name: "available", reason: "correction", quantities }, idemKey });
   assertNoUserErrors(data.inventorySetQuantities, "Bestand speichern");
   return quantities;
 }
