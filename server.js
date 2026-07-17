@@ -129,6 +129,22 @@ function createApp(deps) {
     catch (e) { res.status(502).json({ error: String((e && e.message) || e) }); }
   });
 
+  /* ---------- Produkte / Katalog (Phase 1: lesen) ---------- */
+  app.get("/admin/products", async (req, res) => {
+    try {
+      const products = await shopify.fetchProducts({ query: req.query.q, limit: req.query.limit });
+      res.json({ products });
+    } catch (e) { actionError(res, e); }
+  });
+
+  app.get("/admin/products/:id", async (req, res) => {
+    try {
+      const product = await shopify.fetchProduct(req.params.id);
+      if (!product) return res.status(404).json({ error: "Produkt nicht gefunden" });
+      res.json({ product });
+    } catch (e) { actionError(res, e); }
+  });
+
   app.get("/admin/images", async (req, res) => {
     try { const orders = await shopify.fetchOrders(); res.json({ images: shopify.deriveImages(orders) }); }
     catch (e) { res.status(502).json({ error: String((e && e.message) || e) }); }

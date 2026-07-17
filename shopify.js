@@ -390,9 +390,99 @@ async function testConnection() {
   }
 }
 
+/* ---------- Produkte / Katalog (Phase 1: nur lesen) ---------- */
+const PRODUCTS_QUERY = `
+query Products($first:Int!, $query:String){
+  products(first:$first, sortKey:UPDATED_AT, reverse:true, query:$query){
+    edges{ node{
+      id legacyResourceId title handle status totalInventory updatedAt
+      featuredImage{ url altText }
+      priceRangeV2{ minVariantPrice{ amount currencyCode } maxVariantPrice{ amount currencyCode } }
+    } }
+  }
+}`;
+
+function numId(gidOrId) {
+  if (gidOrId == null) return "";
+  const s = String(gidOrId);
+  return s.startsWith("gid://") ? s.replace(/^.*\//, "") : s.replace(/\D/g, "");
+}
+function mapProductRow(n) {
+  const min = n.priceRangeV2 && n.priceRangeV2.minVariantPrice;
+  const max = n.priceRangeV2 && n.priceRangeV2.maxVariantPrice;
+  const id = n.legacyResourceId != null ? String(n.legacyResourceId) : numId(n.id);
+  return {
+    id, gid: n.id,
+    title: n.title || "",
+    handle: n.handle || "",
+    status: String(n.status || "").toLowerCase(), // active | draft | archived
+    totalInventory: n.totalInventory == null ? null : Number(n.totalInventory),
+    image: (n.featuredImage && n.featuredImage.url) || null,
+    priceMin: min ? Number(min.amount) : null,
+    priceMax: max ? Number(max.amount) : null,
+    currency: (min && min.currencyCode) || "EUR",
+    updatedAt: n.updatedAt || null,
+    adminUrl: `https://admin.shopify.com/store/${storeHandle()}/products/${id}`,
+  };
+}
+async function fetchProducts(opts) {
+  opts = opts || {};
+  const first = Math.min(Math.max(Number(opts.limit) || 50, 1), 250);
+  const query = opts.query ? String(opts.query).slice(0, 200) : null;
+  const data = await adminGraphQL(PRODUCTS_QUERY, { first, query });
+  return ((data.products && data.products.edges) || []).map((e) => mapProductRow(e.node));
+}
+
+const PRODUCT_QUERY = `
+query Product($id:ID!){
+  product(id:$id){
+    id legacyResourceId title handle status descriptionHtml totalInventory updatedAt
+    featuredImage{ url altText }
+    images(first:12){ edges{ node{ url altText } } }
+    options{ name values }
+    priceRangeV2{ minVariantPrice{ amount currencyCode } maxVariantPrice{ amount currencyCode } }
+    collections(first:20){ edges{ node{ id title } } }
+    variants(first:100){ edges{ node{
+      id legacyResourceId title sku price inventoryQuantity
+      selectedOptions{ name value }
+      inventoryItem{ id legacyResourceId }
+    } } }
+  }
+}`;
+function mapProductDetail(n) {
+  if (!n) return null;
+  const row = mapProductRow(n);
+  return Object.assign(row, {
+    descriptionHtml: n.descriptionHtml || "",
+    images: (((n.images && n.images.edges) || []).map((e) => ({ url: e.node.url, alt: e.node.altText || "" }))),
+    options: (n.options || []).map((o) => ({ name: o.name, values: o.values || [] })),
+    collections: (((n.collections && n.collections.edges) || []).map((e) => ({ id: e.node.id, title: e.node.title }))),
+    variants: (((n.variants && n.variants.edges) || []).map((e) => {
+      const v = e.node;
+      return {
+        id: v.legacyResourceId != null ? String(v.legacyResourceId) : numId(v.id),
+        gid: v.id,
+        title: v.title || "",
+        sku: v.sku || "",
+        price: v.price != null ? Number(v.price) : null,
+        inventoryQuantity: v.inventoryQuantity == null ? null : Number(v.inventoryQuantity),
+        options: (v.selectedOptions || []).map((o) => ({ name: o.name, value: o.value })),
+        inventoryItemId: v.inventoryItem && v.inventoryItem.legacyResourceId != null ? String(v.inventoryItem.legacyResourceId) : null,
+      };
+    })),
+  });
+}
+async function fetchProduct(id) {
+  const s = String(id || "");
+  const gid = s.startsWith("gid://") ? s : `gid://shopify/Product/${numId(s)}`;
+  const data = await adminGraphQL(PRODUCT_QUERY, { id: gid });
+  return mapProductDetail(data.product);
+}
+
 module.exports = {
   adminGraphQL, getAccessToken, fetchOrders, mapOrder, deriveImages, cloudinaryPublicId,
   tagOrderDeleted, resolveOrderGid, addOrderTag, markOrderPaid, cancelOrder, fulfillOrder,
   getOrderPreviewData, setPreviewSentNow, updateShippingAddress, sendPreviewComplete,
+  fetchProducts, fetchProduct, mapProductRow, mapProductDetail,
   ORDERS_QUERY, diag, testConnection,
 };

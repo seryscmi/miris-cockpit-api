@@ -48,6 +48,42 @@ const imgs = shopify.deriveImages([m]);
 ok("deriveImages finds 2 eye images", imgs.length === 2, "n=" + imgs.length);
 ok("cloudinary public_id parsed", imgs[0].cloudinaryPublicId === "kunden-augenfotos/ygsx0esi3s8ontkh70uf", imgs[0].cloudinaryPublicId);
 
+/* ---- 1c. Produkt-Mapping (Katalog lesen, Phase 1) ---- */
+console.log("\n[1c] Shopify mapProductRow / mapProductDetail");
+const prodNode = {
+  id: "gid://shopify/Product/123", legacyResourceId: "123", title: "Augenfarben-Armband", handle: "augenfarben-armband",
+  status: "ACTIVE", totalInventory: 42, updatedAt: "2026-07-01T10:00:00Z",
+  featuredImage: { url: "https://cdn.shopify.com/p.jpg", altText: "" },
+  priceRangeV2: { minVariantPrice: { amount: "49.99", currencyCode: "EUR" }, maxVariantPrice: { amount: "79.99", currencyCode: "EUR" } },
+};
+const pr = shopify.mapProductRow(prodNode);
+ok("product id = legacyResourceId", pr.id === "123", pr.id);
+ok("status lowercased", pr.status === "active", pr.status);
+ok("priceMin parsed number", pr.priceMin === 49.99, String(pr.priceMin));
+ok("priceMax parsed number", pr.priceMax === 79.99, String(pr.priceMax));
+ok("totalInventory number", pr.totalInventory === 42, String(pr.totalInventory));
+ok("adminUrl built with handle+id", pr.adminUrl === "https://admin.shopify.com/store/9zjzs5-ri/products/123", pr.adminUrl);
+const prodDetailNode = Object.assign({}, prodNode, {
+  descriptionHtml: "<p>schön</p>",
+  images: { edges: [{ node: { url: "https://cdn.shopify.com/i1.jpg", altText: "a" } }] },
+  options: [{ name: "Ausführung", values: ["Einzel", "Set"] }],
+  collections: { edges: [{ node: { id: "gid://shopify/Collection/9", title: "Alle" } }] },
+  variants: { edges: [
+    { node: { id: "gid://shopify/ProductVariant/9", legacyResourceId: "9", title: "Einzel", sku: "A-1", price: "49.99", inventoryQuantity: 5, selectedOptions: [{ name: "Ausführung", value: "Einzel" }], inventoryItem: { id: "gid://shopify/InventoryItem/77", legacyResourceId: "77" } } },
+    { node: { id: "gid://shopify/ProductVariant/10", legacyResourceId: "10", title: "Set", sku: "A-2", price: "79.99", inventoryQuantity: 3, selectedOptions: [{ name: "Ausführung", value: "Set" }], inventoryItem: { id: "gid://shopify/InventoryItem/78", legacyResourceId: "78" } } },
+  ] },
+});
+const pd = shopify.mapProductDetail(prodDetailNode);
+ok("detail keeps row fields", pd.title === "Augenfarben-Armband" && pd.status === "active");
+ok("detail variants count", pd.variants.length === 2, "n=" + pd.variants.length);
+ok("variant price number", pd.variants[0].price === 49.99, String(pd.variants[0].price));
+ok("variant inventoryQuantity", pd.variants[1].inventoryQuantity === 3, String(pd.variants[1].inventoryQuantity));
+ok("variant id numeric", pd.variants[0].id === "9", pd.variants[0].id);
+ok("variant inventoryItemId numeric", pd.variants[0].inventoryItemId === "77", pd.variants[0].inventoryItemId);
+ok("detail images mapped", pd.images.length === 1 && /i1\.jpg/.test(pd.images[0].url));
+ok("detail options mapped", pd.options[0].name === "Ausführung" && pd.options[0].values.length === 2);
+ok("detail null → null", shopify.mapProductDetail(null) === null);
+
 /* ---- 1b. Klaviyo Anliegen-Mapping (echte Event-Form aus Klaviyo) ---- */
 console.log("\n[1b] Klaviyo mapEvent / deriveKind");
 const evEscalation = { id: "7fTk8gNxCd7", attributes: { datetime: "2026-07-04T15:01:58+00:00", event_properties: { customer_name: "Michail Seryschew", admin_subject: "Chat-Nachricht von Michail Seryschew", topic: "Fehlende Perle im Set", customer_email: "cognacs-gesprochen0t@icloud.com", order_name: "B1001", verified: true, message: "Im Set der Bestellung B1001 fehlt eine Perle. Kunde bittet um Lösung." } } };
@@ -100,6 +136,11 @@ const mockShopify = {
       deadlineAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
     };
   },
+  fetchProducts: async (opts) => {
+    actions.push(["products", (opts && opts.query) || null]);
+    return [{ id: "123", gid: "gid://shopify/Product/123", title: "Augenfarben-Armband", handle: "augenfarben-armband", status: "active", totalInventory: 42, image: null, priceMin: 49.99, priceMax: 79.99, currency: "EUR", updatedAt: "2026-07-01", adminUrl: "https://admin.shopify.com/store/9zjzs5-ri/products/123" }];
+  },
+  fetchProduct: async (id) => id === "404" ? null : { id: String(id), gid: "gid://shopify/Product/" + id, title: "Augenfarben-Armband", status: "active", priceMin: 49.99, priceMax: 79.99, currency: "EUR", descriptionHtml: "", images: [], options: [], collections: [], variants: [{ id: "9", gid: "gid://x/9", title: "Einzel", sku: "A-1", price: 49.99, inventoryQuantity: 5, options: [], inventoryItemId: "77" }] },
 };
 const uploads = [];
 const mockCloud = {
@@ -198,6 +239,30 @@ async function run() {
     ok("POST delete without publicId = 400", r.status === 400);
     r = await fetch(base + "/admin/images/delete", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ publicId: "kunden-augenfotos/abc", orderName: "B1027" }) });
     ok("POST delete with publicId = 200", r.status === 200);
+
+    console.log("\n[3j] Produkte (Katalog lesen)");
+    r = await fetch(base + "/admin/products");
+    ok("GET /admin/products without token = 401", r.status === 401);
+    r = await fetch(base + "/admin/products", { headers: { Authorization: B } });
+    ok("GET /admin/products = 200", r.status === 200);
+    const pjson = await r.json();
+    ok("products array returned", Array.isArray(pjson.products) && pjson.products.length === 1, "n=" + (pjson.products || []).length);
+    ok("product row carries priceMin", pjson.products[0].priceMin === 49.99);
+    r = await fetch(base + "/admin/products?q=armband", { headers: { Authorization: B } });
+    ok("GET /admin/products?q= passes query through", r.status === 200 && actions.some(a => a[0] === "products" && a[1] === "armband"));
+    r = await fetch(base + "/admin/products/123", { headers: { Authorization: B } });
+    ok("GET /admin/products/:id = 200", r.status === 200);
+    const pdjson = await r.json();
+    ok("product detail has variants", pdjson.product && Array.isArray(pdjson.product.variants) && pdjson.product.variants.length === 1);
+    r = await fetch(base + "/admin/products/404", { headers: { Authorization: B } });
+    ok("GET /admin/products/:id unknown = 404", r.status === 404);
+    // Scope-Fehler → 403 (fehlende Berechtigung sauber gemappt)
+    const scopeApp = createApp({ shopify: Object.assign({}, mockShopify, { fetchProducts: async () => { throw new Error('Shopify GraphQL: [{"message":"ACCESS_DENIED"}]'); } }), cloud: mockCloud, klaviyo: mockKlaviyo, db: mockDb });
+    const ss = scopeApp.listen(0);
+    const sb = "http://127.0.0.1:" + ss.address().port;
+    r = await fetch(sb + "/admin/products", { headers: { Authorization: B } });
+    ok("Scope-Fehler → 403", r.status === 403, String(r.status));
+    ss.close();
     ok("cloud.deleteImage was called with publicId", deleted.includes("kunden-augenfotos/abc"), deleted.join(","));
 
     console.log("\n[3b] Anliegen (DB primär)");
