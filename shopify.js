@@ -582,11 +582,39 @@ async function fetchCustomer(id) {
   return mapCustomerDetail(data.customer);
 }
 
+/* ---------- Produkte bearbeiten (Phase 2: schreiben) ---------- */
+/** Titel / Status / Beschreibung eines Produkts ändern. */
+async function updateProduct(id, fields) {
+  fields = fields || {};
+  const gid = String(id).startsWith("gid://") ? String(id) : `gid://shopify/Product/${numId(id)}`;
+  const input = { id: gid };
+  if (fields.title != null) input.title = String(fields.title).slice(0, 255);
+  if (fields.descriptionHtml != null) input.descriptionHtml = String(fields.descriptionHtml);
+  if (fields.status) { const s = String(fields.status).toUpperCase(); if (["ACTIVE", "DRAFT", "ARCHIVED"].includes(s)) input.status = s; }
+  const M = `mutation($input:ProductInput!){ productUpdate(input:$input){ product{ id status title } userErrors{ field message } } }`;
+  const data = await adminGraphQL(M, { input });
+  assertNoUserErrors(data.productUpdate, "Produkt speichern");
+  return data.productUpdate.product;
+}
+/** Varianten-Preise setzen (bulk). variants: [{id, price}] */
+async function updateVariantPrices(productId, variants) {
+  const pgid = String(productId).startsWith("gid://") ? String(productId) : `gid://shopify/Product/${numId(productId)}`;
+  const vars = (variants || [])
+    .filter((v) => v && v.id != null && v.price != null && v.price !== "")
+    .map((v) => ({ id: String(v.id).startsWith("gid://") ? String(v.id) : `gid://shopify/ProductVariant/${numId(v.id)}`, price: String(v.price) }));
+  if (!vars.length) return [];
+  const M = `mutation($productId:ID!, $variants:[ProductVariantsBulkInput!]!){ productVariantsBulkUpdate(productId:$productId, variants:$variants){ productVariants{ id price } userErrors{ field message } } }`;
+  const data = await adminGraphQL(M, { productId: pgid, variants: vars });
+  assertNoUserErrors(data.productVariantsBulkUpdate, "Preise speichern");
+  return data.productVariantsBulkUpdate.productVariants;
+}
+
 module.exports = {
   adminGraphQL, getAccessToken, fetchOrders, mapOrder, deriveImages, cloudinaryPublicId,
   tagOrderDeleted, resolveOrderGid, addOrderTag, markOrderPaid, cancelOrder, fulfillOrder,
   getOrderPreviewData, setPreviewSentNow, updateShippingAddress, sendPreviewComplete,
   fetchProducts, fetchProduct, mapProductRow, mapProductDetail,
   fetchDiscounts, mapDiscount, fetchCustomers, mapCustomerRow, fetchCustomer, fetchCustomerByEmail, mapCustomerDetail,
+  updateProduct, updateVariantPrices,
   ORDERS_QUERY, diag, testConnection,
 };

@@ -122,7 +122,8 @@ function createApp(deps) {
     if (!timingEqual(token, configured)) return res.status(401).json({ error: "unauthorized" });
     next();
   };
-  app.use("/admin", rateLimit({ windowMs: 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false }), auth);
+  const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX) || 240; // pro Minute/IP; höher wegen vieler Cockpit-Ansichten (Produkte/Kunden/Bestellungen im Burst)
+  app.use("/admin", rateLimit({ windowMs: 60 * 1000, limit: RATE_LIMIT_MAX, standardHeaders: true, legacyHeaders: false }), auth);
 
   app.get("/admin/orders", async (req, res) => {
     try { res.json({ orders: await shopify.fetchOrders() }); }
@@ -142,6 +143,17 @@ function createApp(deps) {
       const product = await shopify.fetchProduct(req.params.id);
       if (!product) return res.status(404).json({ error: "Produkt nicht gefunden" });
       res.json({ product });
+    } catch (e) { actionError(res, e); }
+  });
+
+  // Produkt bearbeiten (Phase 2): Titel/Status + Varianten-Preise
+  app.patch("/admin/products/:id", async (req, res) => {
+    try {
+      const { title, descriptionHtml, status, variants } = req.body || {};
+      const out = { ok: true };
+      if (title != null || descriptionHtml != null || status) out.product = await shopify.updateProduct(req.params.id, { title, descriptionHtml, status });
+      if (Array.isArray(variants) && variants.length) out.variants = await shopify.updateVariantPrices(req.params.id, variants);
+      res.json(out);
     } catch (e) { actionError(res, e); }
   });
 

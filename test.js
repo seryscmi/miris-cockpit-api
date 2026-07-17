@@ -6,6 +6,7 @@ process.env.SHOPIFY_STORE_HANDLE = "9zjzs5-ri";
 process.env.BANK_SYNC_SECRET = "cron-secret-xyz";
 process.env.BANK_REDIRECT_URL = "https://miris-cockpit-api.onrender.com/bank/callback";
 process.env.BANK_DRYRUN = "false"; // Tests prüfen den scharfen Auto-Mark-Pfad explizit
+process.env.RATE_LIMIT_MAX = "100000"; // im Test kein Rate-Limit (viele Requests in <1s)
 
 const assert = require("assert");
 const { createApp, timingEqual } = require("./server");
@@ -176,6 +177,12 @@ const mockShopify = {
   fetchCustomers: async (opts) => { actions.push(["customers", (opts && opts.query) || null]); return [{ id: "7", gid: "gid://x/7", name: "Michail S", email: "m@x.de", phone: "", ordersCount: 3, amountSpent: 149.97, currency: "EUR", tags: ["VIP"] }]; },
   fetchCustomerByEmail: async (email) => email ? { id: "7", name: "Michail S", email, ordersCount: 3, amountSpent: 149.97, currency: "EUR", tags: ["VIP"], note: "nett", marketingState: "SUBSCRIBED", defaultAddress: { address1: "Weg 1", zip: "50667", city: "Köln", country: "Germany" }, adminUrl: "https://admin.shopify.com/store/9zjzs5-ri/customers/7" } : null,
   fetchCustomer: async (id) => id === "404" ? null : { id: String(id), name: "Michail S", email: "m@x.de", ordersCount: 3, amountSpent: 149.97, currency: "EUR", tags: [], adminUrl: "x" },
+  updateProduct: async (id, fields) => {
+    if (fields && fields.title === "FAIL") { const e = new Error("Produkt speichern: Titel ungültig"); e.userErrors = [{ field: "title", message: "Titel ungültig" }]; throw e; }
+    actions.push(["updateProduct", id, fields]);
+    return { id: "gid://shopify/Product/" + id, status: (fields.status || "active").toUpperCase(), title: fields.title || "T" };
+  },
+  updateVariantPrices: async (pid, variants) => { actions.push(["updateVariantPrices", pid, variants]); return (variants || []).map((v) => ({ id: v.id, price: String(v.price) })); },
 };
 const uploads = [];
 const mockCloud = {
@@ -320,6 +327,18 @@ async function run() {
     ok("GET /admin/customers/:id = 200", r.status === 200);
     r = await fetch(base + "/admin/customers/404", { headers: { Authorization: B } });
     ok("GET /admin/customers/:id unknown = 404", r.status === 404);
+
+    console.log("\n[3l] Produkt bearbeiten (schreiben)");
+    r = await fetch(base + "/admin/products/123", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ title: "Neuer Titel", status: "draft", variants: [{ id: "9", price: 59.99 }] }) });
+    ok("PATCH /admin/products/:id = 200", r.status === 200, String(r.status));
+    const pu = await r.json();
+    ok("PATCH ruft updateProduct", actions.some(a => a[0] === "updateProduct" && a[2] && a[2].title === "Neuer Titel" && a[2].status === "draft"));
+    ok("PATCH ruft updateVariantPrices", actions.some(a => a[0] === "updateVariantPrices" && a[2][0].price === 59.99));
+    ok("PATCH ohne Auth = 401", (await fetch(base + "/admin/products/123", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: "{}" })).status === 401);
+    r = await fetch(base + "/admin/products/123", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ variants: [{ id: "9", price: 42 }] }) });
+    ok("PATCH nur Varianten (ohne Produktfelder) = 200", r.status === 200);
+    r = await fetch(base + "/admin/products/123", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ title: "FAIL" }) });
+    ok("PATCH userError → 422", r.status === 422, String(r.status));
     ok("cloud.deleteImage was called with publicId", deleted.includes("kunden-augenfotos/abc"), deleted.join(","));
 
     console.log("\n[3b] Anliegen (DB primär)");
