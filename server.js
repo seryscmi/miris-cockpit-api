@@ -149,10 +149,11 @@ function createApp(deps) {
   // Produkt bearbeiten (Phase 2): Titel/Status + Varianten-Preise
   app.patch("/admin/products/:id", async (req, res) => {
     try {
-      const { title, descriptionHtml, status, variants } = req.body || {};
+      const { title, descriptionHtml, status, variants, inventory } = req.body || {};
       const out = { ok: true };
       if (title != null || descriptionHtml != null || status) out.product = await shopify.updateProduct(req.params.id, { title, descriptionHtml, status });
       if (Array.isArray(variants) && variants.length) out.variants = await shopify.updateVariantPrices(req.params.id, variants);
+      if (Array.isArray(inventory) && inventory.length) out.inventory = await shopify.setInventoryQuantities(inventory);
       res.json(out);
     } catch (e) { actionError(res, e); }
   });

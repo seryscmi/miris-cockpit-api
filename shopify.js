@@ -609,12 +609,36 @@ async function updateVariantPrices(productId, variants) {
   return data.productVariantsBulkUpdate.productVariants;
 }
 
+/* ---------- Bestand bearbeiten (Phase 2b) ---------- */
+let _locId = null, _locTs = 0;
+async function primaryLocationId() {
+  if (_locId && (Date.now() - _locTs) < 3600000) return _locId;
+  const data = await adminGraphQL(`{ locations(first:1){ edges{ node{ id } } } }`);
+  const node = data.locations && data.locations.edges[0] && data.locations.edges[0].node;
+  if (!node) throw new Error("Keine Lager-Location gefunden");
+  _locId = node.id; _locTs = Date.now();
+  return _locId;
+}
+/** Bestand ("available") an der Haupt-Location setzen. items: [{inventoryItemId, quantity}] */
+async function setInventoryQuantities(items) {
+  const clean = (items || [])
+    .filter((x) => x && x.inventoryItemId && x.quantity != null && x.quantity !== "")
+    .map((x) => ({ inventoryItemId: String(x.inventoryItemId).startsWith("gid://") ? String(x.inventoryItemId) : `gid://shopify/InventoryItem/${numId(x.inventoryItemId)}`, quantity: Math.round(Number(x.quantity)) }));
+  if (!clean.length) return [];
+  const locationId = await primaryLocationId();
+  const quantities = clean.map((x) => ({ inventoryItemId: x.inventoryItemId, locationId, quantity: x.quantity }));
+  const M = `mutation($input:InventorySetQuantitiesInput!){ inventorySetQuantities(input:$input){ inventoryAdjustmentGroup{ createdAt } userErrors{ field message } } }`;
+  const data = await adminGraphQL(M, { input: { name: "available", reason: "correction", ignoreCompareQuantity: true, quantities } });
+  assertNoUserErrors(data.inventorySetQuantities, "Bestand speichern");
+  return quantities;
+}
+
 module.exports = {
   adminGraphQL, getAccessToken, fetchOrders, mapOrder, deriveImages, cloudinaryPublicId,
   tagOrderDeleted, resolveOrderGid, addOrderTag, markOrderPaid, cancelOrder, fulfillOrder,
   getOrderPreviewData, setPreviewSentNow, updateShippingAddress, sendPreviewComplete,
   fetchProducts, fetchProduct, mapProductRow, mapProductDetail,
   fetchDiscounts, mapDiscount, fetchCustomers, mapCustomerRow, fetchCustomer, fetchCustomerByEmail, mapCustomerDetail,
-  updateProduct, updateVariantPrices,
+  updateProduct, updateVariantPrices, setInventoryQuantities, primaryLocationId,
   ORDERS_QUERY, diag, testConnection,
 };

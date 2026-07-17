@@ -183,6 +183,7 @@ const mockShopify = {
     return { id: "gid://shopify/Product/" + id, status: (fields.status || "active").toUpperCase(), title: fields.title || "T" };
   },
   updateVariantPrices: async (pid, variants) => { actions.push(["updateVariantPrices", pid, variants]); return (variants || []).map((v) => ({ id: v.id, price: String(v.price) })); },
+  setInventoryQuantities: async (items) => { actions.push(["setInventory", items]); return (items || []).map((x) => ({ inventoryItemId: x.inventoryItemId, quantity: x.quantity })); },
 };
 const uploads = [];
 const mockCloud = {
@@ -339,6 +340,9 @@ async function run() {
     ok("PATCH nur Varianten (ohne Produktfelder) = 200", r.status === 200);
     r = await fetch(base + "/admin/products/123", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ title: "FAIL" }) });
     ok("PATCH userError → 422", r.status === 422, String(r.status));
+    r = await fetch(base + "/admin/products/123", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ inventory: [{ inventoryItemId: "77", quantity: 30 }] }) });
+    ok("PATCH mit Bestand = 200", r.status === 200);
+    ok("PATCH ruft setInventoryQuantities", actions.some(a => a[0] === "setInventory" && a[1][0].inventoryItemId === "77" && a[1][0].quantity === 30));
     ok("cloud.deleteImage was called with publicId", deleted.includes("kunden-augenfotos/abc"), deleted.join(","));
 
     console.log("\n[3b] Anliegen (DB primär)");
