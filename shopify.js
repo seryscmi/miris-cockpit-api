@@ -554,7 +554,7 @@ async function fetchCustomers(opts) {
   const data = await adminGraphQL(CUSTOMERS_QUERY, { first, query });
   return ((data.customers && data.customers.edges) || []).map((e) => mapCustomerRow(e.node));
 }
-const CUSTOMER_DETAIL_FIELDS = `id legacyResourceId displayName firstName lastName email phone note tags numberOfOrders amountSpent{ amount currencyCode } createdAt verifiedEmail emailMarketingConsent{ marketingState } defaultAddress{ address1 address2 zip city province country }`;
+const CUSTOMER_DETAIL_FIELDS = `id legacyResourceId displayName firstName lastName email phone note tags numberOfOrders amountSpent{ amount currencyCode } createdAt verifiedEmail emailMarketingConsent{ marketingState } defaultAddress{ id firstName lastName address1 address2 zip city province country phone }`;
 function mapCustomerDetail(n) {
   if (!n) return null;
   const row = mapCustomerRow(n);
@@ -562,7 +562,7 @@ function mapCustomerDetail(n) {
     note: n.note || "",
     marketingState: (n.emailMarketingConsent && n.emailMarketingConsent.marketingState) || null,
     verifiedEmail: !!n.verifiedEmail,
-    defaultAddress: n.defaultAddress ? { address1: n.defaultAddress.address1 || "", address2: n.defaultAddress.address2 || "", zip: n.defaultAddress.zip || "", city: n.defaultAddress.city || "", province: n.defaultAddress.province || "", country: n.defaultAddress.country || "" } : null,
+    defaultAddress: n.defaultAddress ? { id: n.defaultAddress.id || null, firstName: n.defaultAddress.firstName || "", lastName: n.defaultAddress.lastName || "", address1: n.defaultAddress.address1 || "", address2: n.defaultAddress.address2 || "", zip: n.defaultAddress.zip || "", city: n.defaultAddress.city || "", province: n.defaultAddress.province || "", country: n.defaultAddress.country || "", phone: n.defaultAddress.phone || "" } : null,
     adminUrl: `https://admin.shopify.com/store/${storeHandle()}/customers/${row.id}`,
   });
 }
@@ -735,6 +735,12 @@ async function updateCustomer(id, fields) {
   const input = { id: gid };
   if (fields.note != null) input.note = String(fields.note).slice(0, 5000);
   if (Array.isArray(fields.tags)) input.tags = fields.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 50);
+  if (fields.address && typeof fields.address === "object") {
+    const a = fields.address, addr = {};
+    ["firstName", "lastName", "address1", "address2", "zip", "city", "province", "country", "phone"].forEach((k) => { if (a[k] != null) addr[k] = String(a[k]); });
+    if (a.id) addr.id = String(a.id); // vorhandene Adresse aktualisieren, nicht ersetzen
+    if (Object.keys(addr).length) input.addresses = [addr];
+  }
   const M = `mutation($input:CustomerInput!){ customerUpdate(input:$input){ customer{ id tags note } userErrors{ field message } } }`;
   const data = await adminGraphQL(M, { input });
   assertNoUserErrors(data.customerUpdate, "Kunde speichern");

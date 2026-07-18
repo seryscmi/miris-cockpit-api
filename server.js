@@ -225,8 +225,8 @@ function createApp(deps) {
   // Kunde bearbeiten (Phase 5): Tags + Notiz
   app.patch("/admin/customers/:id", async (req, res) => {
     try {
-      const { note, tags } = req.body || {};
-      const customer = await shopify.updateCustomer(req.params.id, { note, tags });
+      const { note, tags, address } = req.body || {};
+      const customer = await shopify.updateCustomer(req.params.id, { note, tags, address });
       res.json({ ok: true, customer });
     } catch (e) { actionError(res, e); }
   });

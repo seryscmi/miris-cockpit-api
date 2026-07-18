@@ -404,6 +404,9 @@ async function run() {
     ok("PATCH /admin/customers/:id = 200", r.status === 200, String(r.status));
     ok("updateCustomer mit Tags+Notiz", actions.some(a => a[0] === "updateCustomer" && a[1] === "7" && a[2].note === "netter Kunde" && a[2].tags.length === 2));
     ok("PATCH customer ohne Auth = 401", (await fetch(base + "/admin/customers/7", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: "{}" })).status === 401);
+    r = await fetch(base + "/admin/customers/7", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ address: { id: "gid://shopify/MailingAddress/1", city: "Köln", zip: "50667", address1: "Weg 2" } }) });
+    ok("PATCH customer mit Adresse = 200", r.status === 200);
+    ok("updateCustomer erhält Adresse (mit id)", actions.some(a => a[0] === "updateCustomer" && a[2].address && a[2].address.city === "Köln" && a[2].address.id === "gid://shopify/MailingAddress/1"));
     r = await fetch(base + "/admin/customers/7", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ note: "FAIL" }) });
     ok("PATCH customer userError → 422", r.status === 422);
 
