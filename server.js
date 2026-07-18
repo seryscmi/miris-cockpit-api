@@ -157,6 +157,24 @@ function createApp(deps) {
       res.json(out);
     } catch (e) { actionError(res, e); }
   });
+  // Produktbild hinzufügen (Base64 → Cloudinary → Shopify) / löschen
+  app.post("/admin/products/:id/image", async (req, res) => {
+    try {
+      const { imageBase64, mimeType, alt } = req.body || {};
+      if (!imageBase64) return res.status(400).json({ error: "Bild fehlt" });
+      const up = await cloud.uploadImage(imageBase64, { folder: "produkt-bilder", mime: mimeType || "image/jpeg", tags: ["produkt"] });
+      const image = await shopify.addProductImage(req.params.id, up.secureUrl, alt);
+      res.json({ ok: true, image });
+    } catch (e) { actionError(res, e); }
+  });
+  app.post("/admin/products/:id/image/delete", async (req, res) => {
+    try {
+      const { mediaId } = req.body || {};
+      if (!mediaId) return res.status(400).json({ error: "mediaId erforderlich" });
+      const r = await shopify.deleteProductImage(req.params.id, mediaId);
+      res.json({ ok: true, ...r });
+    } catch (e) { actionError(res, e); }
+  });
 
   /* ---------- Rabatte (Phase 1: lesen; Phase 4: anlegen/löschen) ---------- */
   app.get("/admin/discounts", async (req, res) => {

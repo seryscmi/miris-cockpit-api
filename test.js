@@ -66,7 +66,7 @@ ok("totalInventory number", pr.totalInventory === 42, String(pr.totalInventory))
 ok("adminUrl built with handle+id", pr.adminUrl === "https://admin.shopify.com/store/9zjzs5-ri/products/123", pr.adminUrl);
 const prodDetailNode = Object.assign({}, prodNode, {
   descriptionHtml: "<p>schön</p>",
-  images: { edges: [{ node: { url: "https://cdn.shopify.com/i1.jpg", altText: "a" } }] },
+  media: { edges: [{ node: { id: "gid://shopify/MediaImage/1", image: { url: "https://cdn.shopify.com/i1.jpg", altText: "a" } } }] },
   options: [{ name: "Ausführung", values: ["Einzel", "Set"] }],
   collections: { edges: [{ node: { id: "gid://shopify/Collection/9", title: "Alle" } }] },
   variants: { edges: [
@@ -184,6 +184,8 @@ const mockShopify = {
   },
   updateVariantPrices: async (pid, variants) => { actions.push(["updateVariantPrices", pid, variants]); return (variants || []).map((v) => ({ id: v.id, price: String(v.price) })); },
   setInventoryQuantities: async (items) => { actions.push(["setInventory", items]); return (items || []).map((x) => ({ inventoryItemId: x.inventoryItemId, quantity: x.quantity })); },
+  addProductImage: async (pid, url, alt) => { actions.push(["addProductImage", pid, url]); return { id: "gid://shopify/MediaImage/1", url }; },
+  deleteProductImage: async (pid, mediaId) => { actions.push(["deleteProductImage", pid, mediaId]); return { deleted: 1 }; },
   updateCustomer: async (id, fields) => { if (fields && fields.note === "FAIL") { const e = new Error("Kunde speichern: ungültig"); e.userErrors = [{ message: "ungültig" }]; throw e; } actions.push(["updateCustomer", id, fields]); return { id: "gid://shopify/Customer/" + id, tags: fields.tags || [], note: fields.note || "" }; },
   createDiscount: async (opts) => { if (!opts || !opts.code) { const e = new Error("Code erforderlich"); e.userErrors = [{ message: e.message }]; throw e; } actions.push(["createDiscount", opts]); return { id: "9", code: opts.code }; },
   deleteDiscount: async (gid, kind) => { actions.push(["deleteDiscount", gid, kind]); return { deleted: true }; },
@@ -355,6 +357,16 @@ async function run() {
     r = await fetch(base + "/admin/products/123", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ inventory: [{ inventoryItemId: "77", quantity: 30 }] }) });
     ok("PATCH mit Bestand = 200", r.status === 200);
     ok("PATCH ruft setInventoryQuantities", actions.some(a => a[0] === "setInventory" && a[1][0].inventoryItemId === "77" && a[1][0].quantity === 30));
+
+    console.log("\n[3p] Produktbilder");
+    r = await fetch(base + "/admin/products/123/image", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ imageBase64: "abc", mimeType: "image/jpeg" }) });
+    ok("POST product image = 200", r.status === 200, String(r.status));
+    ok("Bild → Cloudinary-Upload + addProductImage", actions.some(a => a[0] === "addProductImage" && /cloudinary/.test(a[2])));
+    ok("Bild ohne Daten → 400", (await fetch(base + "/admin/products/123/image", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: "{}" })).status === 400);
+    r = await fetch(base + "/admin/products/123/image/delete", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ mediaId: "gid://shopify/MediaImage/1" }) });
+    ok("POST product image delete = 200", r.status === 200);
+    ok("deleteProductImage mit mediaId", actions.some(a => a[0] === "deleteProductImage" && a[2] === "gid://shopify/MediaImage/1"));
+    ok("Bild löschen ohne mediaId → 400", (await fetch(base + "/admin/products/123/image/delete", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: "{}" })).status === 400);
 
     console.log("\n[3m] Erstattung (Refund)");
     r = await fetch(base + "/admin/orders/B1027/refund-info", { headers: { Authorization: B } });

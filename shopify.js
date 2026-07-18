@@ -438,7 +438,7 @@ query Product($id:ID!){
   product(id:$id){
     id legacyResourceId title handle status descriptionHtml totalInventory updatedAt
     featuredImage{ url altText }
-    images(first:12){ edges{ node{ url altText } } }
+    media(first:20){ edges{ node{ ... on MediaImage { id image{ url altText } } } } }
     options{ name values }
     priceRangeV2{ minVariantPrice{ amount currencyCode } maxVariantPrice{ amount currencyCode } }
     collections(first:20){ edges{ node{ id title } } }
@@ -454,7 +454,7 @@ function mapProductDetail(n) {
   const row = mapProductRow(n);
   return Object.assign(row, {
     descriptionHtml: n.descriptionHtml || "",
-    images: (((n.images && n.images.edges) || []).map((e) => ({ url: e.node.url, alt: e.node.altText || "" }))),
+    images: (((n.media && n.media.edges) || []).map((e) => { const nd = e.node || {}; const img = nd.image || {}; return { id: nd.id || null, url: img.url || null, alt: img.altText || "" }; }).filter((x) => x.url || x.id)),
     options: (n.options || []).map((o) => ({ name: o.name, values: o.values || [] })),
     collections: (((n.collections && n.collections.edges) || []).map((e) => ({ id: e.node.id, title: e.node.title }))),
     variants: (((n.variants && n.variants.edges) || []).map((e) => {
@@ -609,6 +609,29 @@ async function updateVariantPrices(productId, variants) {
   return data.productVariantsBulkUpdate.productVariants;
 }
 
+/* ---------- Produktbilder (Extra) ---------- */
+async function addProductImage(productId, imageUrl, alt) {
+  const pgid = String(productId).startsWith("gid://") ? String(productId) : `gid://shopify/Product/${numId(productId)}`;
+  const media = [{ originalSource: String(imageUrl), mediaContentType: "IMAGE" }];
+  if (alt) media[0].alt = String(alt).slice(0, 200);
+  const M = `mutation($productId:ID!, $media:[CreateMediaInput!]!){ productCreateMedia(productId:$productId, media:$media){ media{ ... on MediaImage { id image{ url } } } mediaUserErrors{ field message } } }`;
+  const data = await adminGraphQL(M, { productId: pgid, media });
+  const errs = data.productCreateMedia && data.productCreateMedia.mediaUserErrors;
+  if (errs && errs.length) { const e = new Error("Bild hinzufügen: " + errs.map((x) => x.message).join("; ")); e.userErrors = errs; throw e; }
+  const m0 = data.productCreateMedia.media && data.productCreateMedia.media[0];
+  return { id: m0 && m0.id, url: m0 && m0.image && m0.image.url };
+}
+async function deleteProductImage(productId, mediaId) {
+  const pgid = String(productId).startsWith("gid://") ? String(productId) : `gid://shopify/Product/${numId(productId)}`;
+  const mid = String(mediaId || "");
+  if (!mid.startsWith("gid://")) throw new Error("Ungültige Bild-ID");
+  const M = `mutation($productId:ID!, $mediaIds:[ID!]!){ productDeleteMedia(productId:$productId, mediaIds:$mediaIds){ deletedMediaIds mediaUserErrors{ field message } } }`;
+  const data = await adminGraphQL(M, { productId: pgid, mediaIds: [mid] });
+  const errs = data.productDeleteMedia && data.productDeleteMedia.mediaUserErrors;
+  if (errs && errs.length) { const e = new Error("Bild löschen: " + errs.map((x) => x.message).join("; ")); e.userErrors = errs; throw e; }
+  return { deleted: (data.productDeleteMedia.deletedMediaIds || []).length };
+}
+
 /* ---------- Bestand bearbeiten (Phase 2b) ---------- */
 let _locId = null, _locTs = 0;
 async function primaryLocationId() {
@@ -757,7 +780,7 @@ module.exports = {
   getOrderPreviewData, setPreviewSentNow, updateShippingAddress, sendPreviewComplete,
   fetchProducts, fetchProduct, mapProductRow, mapProductDetail,
   fetchDiscounts, mapDiscount, fetchCustomers, mapCustomerRow, fetchCustomer, fetchCustomerByEmail, mapCustomerDetail,
-  updateProduct, updateVariantPrices, setInventoryQuantities, primaryLocationId,
+  updateProduct, updateVariantPrices, setInventoryQuantities, primaryLocationId, addProductImage, deleteProductImage,
   getRefundInfo, refundOrder, createDiscount, deleteDiscount, setDiscountActive, updateCustomer,
   ORDERS_QUERY, diag, testConnection,
 };
