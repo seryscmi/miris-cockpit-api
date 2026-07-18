@@ -687,6 +687,44 @@ async function refundOrder(orderName, opts) {
   return data.refundCreate.refund;
 }
 
+/* ---------- Rabatte anlegen / löschen (Phase 4: schreiben) ---------- */
+/** Rabattcode anlegen. opts: {code, kind:"percentage"|"amount", value, title?, endsAt?, usageLimit?, oncePerCustomer?} */
+async function createDiscount(opts) {
+  opts = opts || {};
+  const code = String(opts.code || "").trim();
+  if (!code) { const e = new Error("Code erforderlich"); e.userErrors = [{ message: e.message }]; throw e; }
+  const val = Number(opts.value);
+  if (!(val > 0)) { const e = new Error("Wert muss größer als 0 sein"); e.userErrors = [{ message: e.message }]; throw e; }
+  const value = opts.kind === "amount"
+    ? { discountAmount: { amount: (Math.round(val * 100) / 100).toFixed(2), appliesOnEachItem: false } }
+    : { percentage: Math.max(0, Math.min(1, val / 100)) };
+  const input = {
+    title: opts.title ? String(opts.title).slice(0, 255) : code,
+    code,
+    startsAt: new Date().toISOString(),
+    customerSelection: { all: true },
+    customerGets: { value, items: { all: true } },
+    appliesOncePerCustomer: !!opts.oncePerCustomer,
+  };
+  if (opts.endsAt) input.endsAt = String(opts.endsAt);
+  if (opts.usageLimit && Number(opts.usageLimit) > 0) input.usageLimit = Math.round(Number(opts.usageLimit));
+  const M = `mutation($d:DiscountCodeBasicInput!){ discountCodeBasicCreate(basicCodeDiscount:$d){ codeDiscountNode{ id } userErrors{ field message } } }`;
+  const data = await adminGraphQL(M, { d: input });
+  assertNoUserErrors(data.discountCodeBasicCreate, "Rabatt anlegen");
+  return { id: numId(data.discountCodeBasicCreate.codeDiscountNode && data.discountCodeBasicCreate.codeDiscountNode.id), code };
+}
+/** Rabatt löschen (gid + kind aus der Liste). */
+async function deleteDiscount(gid, kind) {
+  const id = String(gid || "");
+  if (!id.startsWith("gid://")) throw new Error("Ungültige Rabatt-ID");
+  const M = kind === "automatic"
+    ? `mutation($id:ID!){ discountAutomaticDelete(id:$id){ deletedAutomaticDiscountId userErrors{ field message } } }`
+    : `mutation($id:ID!){ discountCodeDelete(id:$id){ deletedCodeDiscountId userErrors{ field message } } }`;
+  const data = await adminGraphQL(M, { id });
+  assertNoUserErrors(kind === "automatic" ? data.discountAutomaticDelete : data.discountCodeDelete, "Rabatt löschen");
+  return { deleted: true };
+}
+
 module.exports = {
   adminGraphQL, getAccessToken, fetchOrders, mapOrder, deriveImages, cloudinaryPublicId,
   tagOrderDeleted, resolveOrderGid, addOrderTag, markOrderPaid, cancelOrder, fulfillOrder,
@@ -694,6 +732,6 @@ module.exports = {
   fetchProducts, fetchProduct, mapProductRow, mapProductDetail,
   fetchDiscounts, mapDiscount, fetchCustomers, mapCustomerRow, fetchCustomer, fetchCustomerByEmail, mapCustomerDetail,
   updateProduct, updateVariantPrices, setInventoryQuantities, primaryLocationId,
-  getRefundInfo, refundOrder,
+  getRefundInfo, refundOrder, createDiscount, deleteDiscount,
   ORDERS_QUERY, diag, testConnection,
 };

@@ -184,6 +184,8 @@ const mockShopify = {
   },
   updateVariantPrices: async (pid, variants) => { actions.push(["updateVariantPrices", pid, variants]); return (variants || []).map((v) => ({ id: v.id, price: String(v.price) })); },
   setInventoryQuantities: async (items) => { actions.push(["setInventory", items]); return (items || []).map((x) => ({ inventoryItemId: x.inventoryItemId, quantity: x.quantity })); },
+  createDiscount: async (opts) => { if (!opts || !opts.code) { const e = new Error("Code erforderlich"); e.userErrors = [{ message: e.message }]; throw e; } actions.push(["createDiscount", opts]); return { id: "9", code: opts.code }; },
+  deleteDiscount: async (gid, kind) => { actions.push(["deleteDiscount", gid, kind]); return { deleted: true }; },
   getRefundInfo: async (name) => ({ orderId: "gid://shopify/Order/1", name, maxRefundable: 49.99, currency: "EUR", parentTransactionId: "gid://shopify/OrderTransaction/1", gateway: "shopify_payments" }),
   refundOrder: async (name, opts) => {
     const amt = Number(opts.amount);
@@ -364,6 +366,19 @@ async function run() {
     ok("Erstattung über Maximum → 422", r.status === 422, String(r.status));
     r = await fetch(base + "/admin/orders/B1027/refund", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ amount: 0 }) });
     ok("Erstattung 0 € → 422", r.status === 422);
+
+    console.log("\n[3n] Rabatte anlegen/löschen");
+    r = await fetch(base + "/admin/discounts", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ code: "SOMMER10", kind: "percentage", value: 10 }) });
+    ok("POST /admin/discounts = 200", r.status === 200, String(r.status));
+    ok("createDiscount aufgerufen", actions.some(a => a[0] === "createDiscount" && a[1].code === "SOMMER10" && a[1].value === 10));
+    ok("POST /admin/discounts ohne Auth = 401", (await fetch(base + "/admin/discounts", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status === 401);
+    r = await fetch(base + "/admin/discounts", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ code: "", kind: "percentage", value: 10 }) });
+    ok("Rabatt ohne Code → 422", r.status === 422, String(r.status));
+    r = await fetch(base + "/admin/discounts/delete", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ gid: "gid://shopify/DiscountCodeNode/5", kind: "code" }) });
+    ok("POST /admin/discounts/delete = 200", r.status === 200);
+    ok("deleteDiscount mit gid+kind", actions.some(a => a[0] === "deleteDiscount" && a[1] === "gid://shopify/DiscountCodeNode/5" && a[2] === "code"));
+    r = await fetch(base + "/admin/discounts/delete", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({}) });
+    ok("Löschen ohne gid → 400", r.status === 400);
     ok("cloud.deleteImage was called with publicId", deleted.includes("kunden-augenfotos/abc"), deleted.join(","));
 
     console.log("\n[3b] Anliegen (DB primär)");

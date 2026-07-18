@@ -158,10 +158,25 @@ function createApp(deps) {
     } catch (e) { actionError(res, e); }
   });
 
-  /* ---------- Rabatte (Phase 1: lesen) ---------- */
+  /* ---------- Rabatte (Phase 1: lesen; Phase 4: anlegen/löschen) ---------- */
   app.get("/admin/discounts", async (req, res) => {
     try { res.json({ discounts: await shopify.fetchDiscounts({ limit: req.query.limit }) }); }
     catch (e) { actionError(res, e); }
+  });
+  app.post("/admin/discounts", async (req, res) => {
+    try {
+      const { code, kind, value, title, endsAt, usageLimit, oncePerCustomer } = req.body || {};
+      const d = await shopify.createDiscount({ code, kind, value, title, endsAt, usageLimit, oncePerCustomer });
+      res.json({ ok: true, discount: d });
+    } catch (e) { actionError(res, e); }
+  });
+  app.post("/admin/discounts/delete", async (req, res) => {
+    try {
+      const { gid, kind } = req.body || {};
+      if (!gid) return res.status(400).json({ error: "gid erforderlich" });
+      const r = await shopify.deleteDiscount(gid, kind);
+      res.json({ ok: true, ...r });
+    } catch (e) { actionError(res, e); }
   });
 
   /* ---------- Kunden (Phase 1: echte Shopify-Datensätze lesen) ---------- */
