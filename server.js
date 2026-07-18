@@ -443,6 +443,15 @@ function createApp(deps) {
     } catch (e) { actionError(res, e); }
   });
 
+  // Direktverkauf: Entwurf-Bestellung + Bezahllink
+  app.post("/admin/draft-orders", async (req, res) => {
+    try {
+      const { lineItems, email, note } = req.body || {};
+      const draft = await shopify.createDraftOrder({ lineItems, email, note });
+      res.json({ ok: true, draft });
+    } catch (e) { actionError(res, e); }
+  });
+
   // Erstattung: erst Info (max. Betrag), dann ausführen
   app.get("/admin/orders/:name/refund-info", async (req, res) => {
     try { res.json(await shopify.getRefundInfo(req.params.name)); }

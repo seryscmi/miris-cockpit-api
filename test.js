@@ -187,6 +187,7 @@ const mockShopify = {
   addProductImage: async (pid, url, alt) => { actions.push(["addProductImage", pid, url]); return { id: "gid://shopify/MediaImage/1", url }; },
   deleteProductImage: async (pid, mediaId) => { actions.push(["deleteProductImage", pid, mediaId]); return { deleted: 1 }; },
   updateCustomer: async (id, fields) => { if (fields && fields.note === "FAIL") { const e = new Error("Kunde speichern: ungültig"); e.userErrors = [{ message: "ungültig" }]; throw e; } actions.push(["updateCustomer", id, fields]); return { id: "gid://shopify/Customer/" + id, tags: fields.tags || [], note: fields.note || "" }; },
+  createDraftOrder: async (opts) => { if (!opts.lineItems || !opts.lineItems.length) { const e = new Error("Mindestens eine Position nötig"); e.userErrors = [{ message: e.message }]; throw e; } actions.push(["draftOrder", opts]); return { id: "555", name: "#D1", invoiceUrl: "https://m-iris.de/invoices/abc", total: 49.99, currency: "EUR" }; },
   createDiscount: async (opts) => { if (!opts || !opts.code) { const e = new Error("Code erforderlich"); e.userErrors = [{ message: e.message }]; throw e; } actions.push(["createDiscount", opts]); return { id: "9", code: opts.code }; },
   deleteDiscount: async (gid, kind) => { actions.push(["deleteDiscount", gid, kind]); return { deleted: true }; },
   setDiscountActive: async (gid, kind, active) => { actions.push(["toggleDiscount", gid, kind, active]); return { active }; },
@@ -405,6 +406,16 @@ async function run() {
     ok("PATCH customer ohne Auth = 401", (await fetch(base + "/admin/customers/7", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: "{}" })).status === 401);
     r = await fetch(base + "/admin/customers/7", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ note: "FAIL" }) });
     ok("PATCH customer userError → 422", r.status === 422);
+
+    console.log("\n[3q] Direktverkauf (Draft-Order)");
+    r = await fetch(base + "/admin/draft-orders", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ lineItems: [{ variantId: "9", quantity: 1 }], email: "k@x.de" }) });
+    ok("POST /admin/draft-orders = 200", r.status === 200, String(r.status));
+    const dj2 = await r.json();
+    ok("Draft liefert invoiceUrl (Bezahllink)", dj2.draft && /invoices/.test(dj2.draft.invoiceUrl));
+    ok("createDraftOrder mit lineItems", actions.some(a => a[0] === "draftOrder" && a[1].lineItems[0].variantId === "9"));
+    ok("Draft ohne Auth = 401", (await fetch(base + "/admin/draft-orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status === 401);
+    r = await fetch(base + "/admin/draft-orders", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ lineItems: [] }) });
+    ok("Draft ohne Position → 422", r.status === 422);
     ok("cloud.deleteImage was called with publicId", deleted.includes("kunden-augenfotos/abc"), deleted.join(","));
 
     console.log("\n[3b] Anliegen (DB primär)");

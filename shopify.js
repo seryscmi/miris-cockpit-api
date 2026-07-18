@@ -710,6 +710,24 @@ async function refundOrder(orderName, opts) {
   return data.refundCreate.refund;
 }
 
+/* ---------- Direktverkauf: Entwurf-Bestellung + Bezahllink (Extra) ---------- */
+async function createDraftOrder(opts) {
+  opts = opts || {};
+  const lineItems = (opts.lineItems || [])
+    .filter((li) => li && li.variantId && Number(li.quantity) > 0)
+    .map((li) => ({ variantId: String(li.variantId).startsWith("gid://") ? String(li.variantId) : `gid://shopify/ProductVariant/${numId(li.variantId)}`, quantity: Math.round(Number(li.quantity)) }));
+  if (!lineItems.length) { const e = new Error("Mindestens eine Position nötig"); e.userErrors = [{ message: e.message }]; throw e; }
+  const input = { lineItems };
+  if (opts.email) input.email = String(opts.email).trim();
+  if (opts.note) input.note = String(opts.note).slice(0, 1000);
+  const M = `mutation($input:DraftOrderInput!){ draftOrderCreate(input:$input){ draftOrder{ id name invoiceUrl totalPriceSet{ shopMoney{ amount currencyCode } } } userErrors{ field message } } }`;
+  const data = await adminGraphQL(M, { input });
+  assertNoUserErrors(data.draftOrderCreate, "Bestellung anlegen");
+  const d = data.draftOrderCreate.draftOrder || {};
+  const money = d.totalPriceSet && d.totalPriceSet.shopMoney;
+  return { id: numId(d.id), name: d.name, invoiceUrl: d.invoiceUrl, total: money ? Number(money.amount) : null, currency: money ? money.currencyCode : "EUR" };
+}
+
 /* ---------- Kunde bearbeiten (Phase 5: Tags + Notiz) ---------- */
 async function updateCustomer(id, fields) {
   fields = fields || {};
@@ -781,6 +799,6 @@ module.exports = {
   fetchProducts, fetchProduct, mapProductRow, mapProductDetail,
   fetchDiscounts, mapDiscount, fetchCustomers, mapCustomerRow, fetchCustomer, fetchCustomerByEmail, mapCustomerDetail,
   updateProduct, updateVariantPrices, setInventoryQuantities, primaryLocationId, addProductImage, deleteProductImage,
-  getRefundInfo, refundOrder, createDiscount, deleteDiscount, setDiscountActive, updateCustomer,
+  getRefundInfo, refundOrder, createDiscount, deleteDiscount, setDiscountActive, updateCustomer, createDraftOrder,
   ORDERS_QUERY, diag, testConnection,
 };
