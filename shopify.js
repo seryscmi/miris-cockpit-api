@@ -687,6 +687,19 @@ async function refundOrder(orderName, opts) {
   return data.refundCreate.refund;
 }
 
+/* ---------- Kunde bearbeiten (Phase 5: Tags + Notiz) ---------- */
+async function updateCustomer(id, fields) {
+  fields = fields || {};
+  const gid = String(id).startsWith("gid://") ? String(id) : `gid://shopify/Customer/${numId(id)}`;
+  const input = { id: gid };
+  if (fields.note != null) input.note = String(fields.note).slice(0, 5000);
+  if (Array.isArray(fields.tags)) input.tags = fields.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 50);
+  const M = `mutation($input:CustomerInput!){ customerUpdate(input:$input){ customer{ id tags note } userErrors{ field message } } }`;
+  const data = await adminGraphQL(M, { input });
+  assertNoUserErrors(data.customerUpdate, "Kunde speichern");
+  return data.customerUpdate.customer;
+}
+
 /* ---------- Rabatte anlegen / löschen (Phase 4: schreiben) ---------- */
 /** Rabattcode anlegen. opts: {code, kind:"percentage"|"amount", value, title?, endsAt?, usageLimit?, oncePerCustomer?} */
 async function createDiscount(opts) {
@@ -732,6 +745,6 @@ module.exports = {
   fetchProducts, fetchProduct, mapProductRow, mapProductDetail,
   fetchDiscounts, mapDiscount, fetchCustomers, mapCustomerRow, fetchCustomer, fetchCustomerByEmail, mapCustomerDetail,
   updateProduct, updateVariantPrices, setInventoryQuantities, primaryLocationId,
-  getRefundInfo, refundOrder, createDiscount, deleteDiscount,
+  getRefundInfo, refundOrder, createDiscount, deleteDiscount, updateCustomer,
   ORDERS_QUERY, diag, testConnection,
 };

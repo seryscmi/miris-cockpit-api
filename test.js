@@ -184,6 +184,7 @@ const mockShopify = {
   },
   updateVariantPrices: async (pid, variants) => { actions.push(["updateVariantPrices", pid, variants]); return (variants || []).map((v) => ({ id: v.id, price: String(v.price) })); },
   setInventoryQuantities: async (items) => { actions.push(["setInventory", items]); return (items || []).map((x) => ({ inventoryItemId: x.inventoryItemId, quantity: x.quantity })); },
+  updateCustomer: async (id, fields) => { if (fields && fields.note === "FAIL") { const e = new Error("Kunde speichern: ungültig"); e.userErrors = [{ message: "ungültig" }]; throw e; } actions.push(["updateCustomer", id, fields]); return { id: "gid://shopify/Customer/" + id, tags: fields.tags || [], note: fields.note || "" }; },
   createDiscount: async (opts) => { if (!opts || !opts.code) { const e = new Error("Code erforderlich"); e.userErrors = [{ message: e.message }]; throw e; } actions.push(["createDiscount", opts]); return { id: "9", code: opts.code }; },
   deleteDiscount: async (gid, kind) => { actions.push(["deleteDiscount", gid, kind]); return { deleted: true }; },
   getRefundInfo: async (name) => ({ orderId: "gid://shopify/Order/1", name, maxRefundable: 49.99, currency: "EUR", parentTransactionId: "gid://shopify/OrderTransaction/1", gateway: "shopify_payments" }),
@@ -379,6 +380,14 @@ async function run() {
     ok("deleteDiscount mit gid+kind", actions.some(a => a[0] === "deleteDiscount" && a[1] === "gid://shopify/DiscountCodeNode/5" && a[2] === "code"));
     r = await fetch(base + "/admin/discounts/delete", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({}) });
     ok("Löschen ohne gid → 400", r.status === 400);
+
+    console.log("\n[3o] Kunde bearbeiten (Tags + Notiz)");
+    r = await fetch(base + "/admin/customers/7", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ note: "netter Kunde", tags: ["VIP", "Stammkunde"] }) });
+    ok("PATCH /admin/customers/:id = 200", r.status === 200, String(r.status));
+    ok("updateCustomer mit Tags+Notiz", actions.some(a => a[0] === "updateCustomer" && a[1] === "7" && a[2].note === "netter Kunde" && a[2].tags.length === 2));
+    ok("PATCH customer ohne Auth = 401", (await fetch(base + "/admin/customers/7", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: "{}" })).status === 401);
+    r = await fetch(base + "/admin/customers/7", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ note: "FAIL" }) });
+    ok("PATCH customer userError → 422", r.status === 422);
     ok("cloud.deleteImage was called with publicId", deleted.includes("kunden-augenfotos/abc"), deleted.join(","));
 
     console.log("\n[3b] Anliegen (DB primär)");
