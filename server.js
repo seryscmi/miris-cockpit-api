@@ -178,6 +178,14 @@ function createApp(deps) {
       res.json({ ok: true, ...r });
     } catch (e) { actionError(res, e); }
   });
+  app.post("/admin/discounts/toggle", async (req, res) => {
+    try {
+      const { gid, kind, active } = req.body || {};
+      if (!gid) return res.status(400).json({ error: "gid erforderlich" });
+      const r = await shopify.setDiscountActive(gid, kind, active !== false);
+      res.json({ ok: true, ...r });
+    } catch (e) { actionError(res, e); }
+  });
 
   /* ---------- Kunden (Phase 1: echte Shopify-Datensätze lesen) ---------- */
   app.get("/admin/customers", async (req, res) => {

@@ -187,6 +187,7 @@ const mockShopify = {
   updateCustomer: async (id, fields) => { if (fields && fields.note === "FAIL") { const e = new Error("Kunde speichern: ungültig"); e.userErrors = [{ message: "ungültig" }]; throw e; } actions.push(["updateCustomer", id, fields]); return { id: "gid://shopify/Customer/" + id, tags: fields.tags || [], note: fields.note || "" }; },
   createDiscount: async (opts) => { if (!opts || !opts.code) { const e = new Error("Code erforderlich"); e.userErrors = [{ message: e.message }]; throw e; } actions.push(["createDiscount", opts]); return { id: "9", code: opts.code }; },
   deleteDiscount: async (gid, kind) => { actions.push(["deleteDiscount", gid, kind]); return { deleted: true }; },
+  setDiscountActive: async (gid, kind, active) => { actions.push(["toggleDiscount", gid, kind, active]); return { active }; },
   getRefundInfo: async (name) => ({ orderId: "gid://shopify/Order/1", name, maxRefundable: 49.99, currency: "EUR", parentTransactionId: "gid://shopify/OrderTransaction/1", gateway: "shopify_payments" }),
   refundOrder: async (name, opts) => {
     const amt = Number(opts.amount);
@@ -380,6 +381,10 @@ async function run() {
     ok("deleteDiscount mit gid+kind", actions.some(a => a[0] === "deleteDiscount" && a[1] === "gid://shopify/DiscountCodeNode/5" && a[2] === "code"));
     r = await fetch(base + "/admin/discounts/delete", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({}) });
     ok("Löschen ohne gid → 400", r.status === 400);
+    r = await fetch(base + "/admin/discounts/toggle", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ gid: "gid://shopify/DiscountCodeNode/5", kind: "code", active: false }) });
+    ok("POST /admin/discounts/toggle = 200", r.status === 200);
+    ok("setDiscountActive mit active=false", actions.some(a => a[0] === "toggleDiscount" && a[1] === "gid://shopify/DiscountCodeNode/5" && a[3] === false));
+    ok("Toggle ohne gid → 400", (await fetch(base + "/admin/discounts/toggle", { method: "POST", headers: { Authorization: B, "Content-Type": "application/json" }, body: "{}" })).status === 400);
 
     console.log("\n[3o] Kunde bearbeiten (Tags + Notiz)");
     r = await fetch(base + "/admin/customers/7", { method: "PATCH", headers: { Authorization: B, "Content-Type": "application/json" }, body: JSON.stringify({ note: "netter Kunde", tags: ["VIP", "Stammkunde"] }) });

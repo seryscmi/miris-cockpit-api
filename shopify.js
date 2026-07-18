@@ -726,6 +726,19 @@ async function createDiscount(opts) {
   assertNoUserErrors(data.discountCodeBasicCreate, "Rabatt anlegen");
   return { id: numId(data.discountCodeBasicCreate.codeDiscountNode && data.discountCodeBasicCreate.codeDiscountNode.id), code };
 }
+/** Rabatt aktivieren/deaktivieren (gid + kind aus der Liste). */
+async function setDiscountActive(gid, kind, active) {
+  const id = String(gid || "");
+  if (!id.startsWith("gid://")) throw new Error("Ungültige Rabatt-ID");
+  let key;
+  if (kind === "automatic") key = active ? "discountAutomaticActivate" : "discountAutomaticDeactivate";
+  else key = active ? "discountCodeActivate" : "discountCodeDeactivate";
+  const wrap = kind === "automatic" ? "automaticDiscountNode" : "codeDiscountNode";
+  const M = `mutation($id:ID!){ ${key}(id:$id){ ${wrap}{ id } userErrors{ field message } } }`;
+  const data = await adminGraphQL(M, { id });
+  assertNoUserErrors(data[key], active ? "Rabatt aktivieren" : "Rabatt deaktivieren");
+  return { active };
+}
 /** Rabatt löschen (gid + kind aus der Liste). */
 async function deleteDiscount(gid, kind) {
   const id = String(gid || "");
@@ -745,6 +758,6 @@ module.exports = {
   fetchProducts, fetchProduct, mapProductRow, mapProductDetail,
   fetchDiscounts, mapDiscount, fetchCustomers, mapCustomerRow, fetchCustomer, fetchCustomerByEmail, mapCustomerDetail,
   updateProduct, updateVariantPrices, setInventoryQuantities, primaryLocationId,
-  getRefundInfo, refundOrder, createDiscount, deleteDiscount, updateCustomer,
+  getRefundInfo, refundOrder, createDiscount, deleteDiscount, setDiscountActive, updateCustomer,
   ORDERS_QUERY, diag, testConnection,
 };
