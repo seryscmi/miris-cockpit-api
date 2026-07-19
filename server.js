@@ -1,18 +1,22 @@
 "use strict";
 /**
- * M.IRIS Cockpit — Admin-Dienst (Phase 2).
+ * M.IRIS Cockpit — Admin-Dienst.
  *
- * Stateless: liest Bestellungen aus Shopify, löscht Augenbilder aus Cloudinary.
- * Alle Secrets liegen serverseitig (ENV). Der Browser authentifiziert sich mit
- * einem Bearer-Token (ADMIN_TOKEN), CORS ist auf die Cockpit-Origin beschränkt.
+ * Stateless: Shopify-Admin-Proxy (Bestellungen, Produkte, Bestand, Rabatte,
+ * Kunden, Erstattung, Draft Orders), Cloudinary (Augenbilder), Neon-DB
+ * (Anliegen + Chats), Klaviyo-Events (Mails), Enable Banking (Zahlungsabgleich),
+ * DSGVO-Löschung. Alle Secrets liegen serverseitig (ENV). Der Browser
+ * authentifiziert sich mit einem Bearer-Token (ADMIN_TOKEN), CORS ist auf die
+ * Cockpit-Origin beschränkt.
  *
- * Endpoints (alle unter /admin verlangen Bearer-Auth):
+ * Kern-Endpoints (alle unter /admin verlangen Bearer-Auth; vollständige Liste
+ * = Routen-Definitionen weiter unten):
  *   GET  /health                 -> { ok:true }             (ohne Auth)
  *   GET  /admin/orders           -> { orders:[…] }
  *   GET  /admin/images           -> { images:[…] }
  *   POST /admin/images/delete    -> { ok:true }             body:{ publicId, orderName? }
- *   GET  /admin/anliegen         -> { anliegen:[] }         (Phase 3)
- *   GET  /admin/chats            -> { chats:[] }            (Phase 3)
+ *   GET  /admin/anliegen         -> Anliegen aus der DB (+PATCH/DELETE, POST /:id/reply)
+ *   GET  /admin/chats            -> Chats aus der DB (+Suche, DELETE)
  */
 
 const express = require("express");
